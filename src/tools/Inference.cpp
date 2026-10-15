@@ -11,7 +11,7 @@ QColor Inference::axisColor(int i) {
     return i == 0 ? icolor::red() : (i == 1 ? icolor::green() : (i == 2 ? icolor::blue() : icolor::magenta()));
 }
 QString Inference::axisName(int i) {
-    return i == 0 ? "On Red Axis" : (i == 1 ? "On Green Axis" : (i == 2 ? "On Blue Axis" : "Parallel to Edge"));
+    return i == 0 ? "On Red Axis" : (i == 1 ? "On Green Axis" : (i == 2 ? "On Blue Axis" : (i == 3 ? "Parallel to Edge" : "Perpendicular to Edge")));
 }
 
 void Inference::reset() {
@@ -215,12 +215,17 @@ InfResult Inference::compute(double x, double y) {
 
     // ---------------- free inference
     auto axisLines = [&](const Vec3& from, double tol, std::vector<std::tuple<double, int, Vec3, Vec3>>& out) {
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 5; ++i) {
             Vec3 d;
             if (i < 3) d = axis(i);
-            else if (hasRefEdge) d = (refB - refA).normalized();
-            else continue;
-            if (i == 3) {
+            else if (i == 3 && hasRefEdge) d = (refB - refA).normalized();
+            else if (i == 4 && hasRefEdge) {
+                Vec3 n = res.onFace ? res.facePlane.n : axis(2);
+                d = (refB - refA).normalized().cross(n);
+                if (d.length() < 1e-6) continue;
+                d = d.normalized();
+            } else continue;
+            if (i >= 3) {
                 // skip parallel when it coincides with an axis
                 bool dup = false;
                 for (int k = 0; k < 3; ++k) if (std::fabs(std::fabs(d.dot(axis(k))) - 1) < 1e-9) dup = true;
@@ -352,7 +357,7 @@ InfResult Inference::compute(double x, double y) {
     // 4) on axis from anchor
     if (!anchorAx.empty()) {
         auto [sd, ai, q, d] = anchorAx[0];
-        res.type = ai < 3 ? InfType::OnAxis : InfType::Parallel;
+        res.type = ai < 3 ? InfType::OnAxis : (ai == 3 ? InfType::Parallel : InfType::Perpendicular);
         res.p = q;
         res.axis = ai;
         res.dir = d;

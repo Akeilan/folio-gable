@@ -593,7 +593,24 @@ void Renderer::collect(int def, const Mat4& xf, int inheritMat, int depth, int p
         if (!in.alive || in.def < 0 || !D->tagVisible(in.tag)) continue;
         if (in.hidden && !st.showHidden) continue;
         bool childOnPath = onPath && pathPos < (int)path.size() && path[pathPos] == i;
-        collect(in.def, xf * in.xf, in.material >= 0 ? in.material : inheritMat, depth + 1, pathPos + 1, childOnPath, out);
+        Mat4 ixf = in.xf;
+        if (D->model.defs[in.def].alwaysFaceCamera) {
+            // rotate about the instance's vertical axis so its front (-Y) faces the viewer
+            Mat4 w = xf * in.xf;
+            Vec3 o = w.origin();
+            Vec3 v = P->cam->s->perspective ? (P->cam->s->eye - o) : -P->cam->forward();
+            v.z = 0;
+            if (v.length() > 1e-9) {
+                v = v.normalized();
+                double sx = in.xf.axis(0).length(), sy = in.xf.axis(1).length(), sz = in.xf.axis(2).length();
+                Mat4 parentInv = xf.inverted();
+                Vec3 vl = parentInv.vector(v);
+                vl.z = 0;
+                double ang = std::atan2(vl.x, -vl.y);
+                ixf = Mat4::translation(in.xf.origin()) * Mat4::rotation(Vec3(0, 0, 1), ang) * Mat4::scaling(Vec3(sx, sy, sz));
+            }
+        }
+        collect(in.def, xf * ixf, in.material >= 0 ? in.material : inheritMat, depth + 1, pathPos + 1, childOnPath, out);
     }
 }
 

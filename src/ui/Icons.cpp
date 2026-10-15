@@ -253,6 +253,19 @@ static void drawIcon(QPainter& p, const QString& n) {
         p.setBrush(QColor(230, 232, 236));
         if (n == "parallel") { p.drawRect(QRectF(5, 9, 15, 15)); p.drawLine(QPointF(5, 9), QPointF(12, 3)); p.drawLine(QPointF(20, 9), QPointF(27, 3)); p.drawLine(QPointF(27, 3), QPointF(27, 18)); p.drawLine(QPointF(20, 24), QPointF(27, 18)); p.drawLine(QPointF(12, 3), QPointF(27, 3)); }
         else { QPolygonF f; f << QPointF(4, 8) << QPointF(18, 11) << QPointF(18, 22) << QPointF(4, 26); p.drawPolygon(f); QPolygonF s; s << QPointF(18, 11) << QPointF(28, 13) << QPointF(28, 20) << QPointF(18, 22); p.drawPolygon(s); }
+    } else if (n == "sbscratch" || n == "sbcontours" || n == "smoove" || n == "flipedge" || n == "drape") {
+        QPolygonF g;
+        g << QPointF(3, 22) << QPointF(16, 28) << QPointF(29, 20) << QPointF(16, 14);
+        p.setBrush(QColor(170, 200, 140));
+        p.drawPolygon(g);
+        p.setPen(QPen(kInk, 1.0));
+        p.drawLine(QPointF(9.5, 25), QPointF(22.5, 17));
+        p.drawLine(QPointF(9.5, 18), QPointF(22.5, 24));
+        p.setPen(ink);
+        if (n == "smoove") { p.setPen(QPen(kRed, 2.2)); p.drawLine(QPointF(16, 20), QPointF(16, 5)); p.drawLine(QPointF(16, 5), QPointF(12, 9)); p.drawLine(QPointF(16, 5), QPointF(20, 9)); }
+        if (n == "sbcontours") { p.setPen(QPen(QColor(140, 90, 40), 1.6)); p.drawEllipse(QPointF(16, 10), 10, 4); p.drawEllipse(QPointF(16, 9), 5, 2); }
+        if (n == "flipedge") { p.setPen(QPen(kRed, 2.0)); p.drawLine(QPointF(10, 13), QPointF(22, 5)); p.drawLine(QPointF(22, 5), QPointF(18, 5)); p.drawLine(QPointF(22, 5), QPointF(21, 9)); }
+        if (n == "drape") { p.setPen(QPen(kRed, 2.0, Qt::DashLine)); p.drawLine(QPointF(8, 6), QPointF(24, 6)); p.drawLine(QPointF(16, 7), QPointF(16, 18)); }
     } else if (n == "previous") {
         p.setPen(QPen(kInk, 2.6, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(24, 16), QPointF(8, 16)); p.drawLine(QPointF(8, 16), QPointF(14, 10)); p.drawLine(QPointF(8, 16), QPointF(14, 22));
@@ -288,29 +301,20 @@ QPixmap appIconPixmap(int size) {
     p.scale(size / 64.0, size / 64.0);
     // rounded tile
     QLinearGradient g(0, 0, 0, 64);
-    g.setColorAt(0, QColor(38, 120, 70));
+    g.setColorAt(0, QColor(42, 131, 80));
     g.setColorAt(1, QColor(22, 82, 48));
     p.setPen(Qt::NoPen);
     p.setBrush(g);
     p.drawRoundedRect(QRectF(2, 2, 60, 60), 13, 13);
-    // gable house in isometric
-    QPolygonF wall;
-    wall << QPointF(14, 30) << QPointF(32, 39) << QPointF(32, 54) << QPointF(14, 45);
-    QPolygonF wall2;
-    wall2 << QPointF(32, 39) << QPointF(50, 30) << QPointF(50, 45) << QPointF(32, 54);
-    QPolygonF roof;
-    roof << QPointF(10, 30) << QPointF(28, 12) << QPointF(46, 21) << QPointF(32, 39);
-    QPolygonF roof2;
-    roof2 << QPointF(28, 12) << QPointF(54, 30) << QPointF(50, 32) << QPointF(46, 21);
-    p.setPen(QPen(QColor(20, 30, 25), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(QColor(236, 240, 236));
-    p.drawPolygon(wall);
-    p.setBrush(QColor(196, 206, 200));
-    p.drawPolygon(wall2);
-    p.setBrush(QColor(250, 252, 250));
-    p.drawPolygon(roof);
-    p.setBrush(QColor(214, 222, 216));
-    p.drawPolygon(roof2);
+    // isometric gable house (matches resources/icons/gable.svg)
+    auto poly = [](std::initializer_list<QPointF> pts) { return QPolygonF(QVector<QPointF>(pts)); };
+    p.setPen(QPen(QColor(16, 32, 26), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.setBrush(QColor(233, 238, 233));
+    p.drawPolygon(poly({{12.3, 42.9}, {34.8, 55.9}, {34.8, 39.7}, {12.3, 26.7}}));
+    p.setBrush(QColor(185, 198, 189));
+    p.drawPolygon(poly({{34.8, 55.9}, {51.7, 46.2}, {51.7, 29.9}, {43.3, 23.1}, {34.8, 39.7}}));
+    p.setBrush(QColor(251, 253, 251));
+    p.drawPolygon(poly({{12.3, 26.7}, {34.8, 39.7}, {43.3, 23.1}, {20.7, 10.1}}));
     return pm;
 }
 

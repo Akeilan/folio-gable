@@ -3,6 +3,7 @@
 #include "core/Serializer.h"
 #include "core/Solids.h"
 #include "core/FileFormats.h"
+#include "core/Sandbox.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <cstdio>
@@ -270,6 +271,7 @@ static void testExport() {
 }
 
 void testHouse();
+void testSandbox();
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -282,6 +284,7 @@ int main(int argc, char** argv) {
     testIntersect();
     testExport();
     testHouse();
+    testSandbox();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
@@ -310,4 +313,26 @@ void testHouse() {
     CHECK(geom::isSolid(E));
     std::printf("house faces=%d vol=%.0f\n", faces(E), geom::volume(E));
     NEAR(geom::volume(E), 2000.0 * 4000 * 2500 + 0.5 * 2000 * 1500 * 4000, 10);
+}
+
+void testSandbox() {
+    Entities G;
+    sandbox::makeGrid(G, Vec3(), Vec3(1, 0, 0), Vec3(0, 1, 0), 4000, 3000, 1000);
+    CHECK(faces(G) == 24);
+    sandbox::smoove(G, Vec3(2000, 1000, 0), 2000, 500);
+    BBox b = G.bbox();
+    NEAR(b.hi.z, 500, 1);
+    int diag = -1;
+    for (int e = 0; e < (int)G.edges.size(); ++e) if (G.edges[e].alive && G.edges[e].soft && G.edges[e].faces.size() == 2) { diag = e; break; }
+    CHECK(diag >= 0 && sandbox::flipEdge(G, diag));
+    CHECK(faces(G) == 24);
+    Entities T;
+    std::vector<Vec3> pts;
+    for (int i = 0; i < 20; ++i) for (int j = 0; j < 20; ++j) pts.push_back(Vec3(i * 100.0, j * 100.0, std::sin(i * 0.3) * 50));
+    int n = sandbox::tinFromPoints(T, pts);
+    CHECK(n == 19 * 19 * 2);
+    int d = sandbox::drape(T, {{Vec3(50, 120, 999), Vec3(1850, 1700, 999)}});
+    CHECK(d > 10);
+    CHECK(faces(T) > n);
+    std::printf("sandbox: tin=%d draped=%d faces=%d\n", n, d, faces(T));
 }

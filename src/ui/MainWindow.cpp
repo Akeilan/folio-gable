@@ -3,6 +3,7 @@
 #include "core/Geometry.h"
 #include "core/Serializer.h"
 #include "core/Solids.h"
+#include "core/Sandbox.h"
 #include "tools/Tools.h"
 #include "ui/Icons.h"
 #include "ui/Panels.h"
@@ -44,6 +45,9 @@
 #include <QHeaderView>
 #include <QTextBrowser>
 #include <QToolBar>
+#include <QKeySequenceEdit>
+#include <QTabWidget>
+#include <QDateTime>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <functional>
@@ -74,6 +78,15 @@ MainWindow::MainWindow() {
     buildMenus();
     buildToolbars();
     buildStatus();
+    for (auto& [id, a] : act_) defaultShortcuts_[id] = a->shortcut();
+    loadShortcuts();
+    connect(&playTimer_, &QTimer::timeout, this, [this] {
+        int n = (int)doc_->model.scenes.size();
+        if (n == 0) { playScenes(false); return; }
+        playIndex_ = (playIndex_ + 1) % n;
+        sceneTabs_->setCurrentIndex(playIndex_);
+        scenes_->applyScene(playIndex_);
+    });
 
     view_->installEventFilter(this);
     connect(view_, &Viewport::contextMenuRequested, this, &MainWindow::contextMenu);
@@ -108,7 +121,10 @@ MainWindow::MainWindow() {
     connect(scenes_, &ScenesPanel::scenesChanged, this, &MainWindow::updateSceneTabs);
 
     connect(&autosave_, &QTimer::timeout, this, &MainWindow::doAutosave);
-    autosave_.start(5 * 60 * 1000);
+    {
+        int mins = QSettings().value("autosaveMinutes", 5).toInt();
+        if (mins > 0) autosave_.start(mins * 60 * 1000);
+    }
 
     QSettings s;
     restoreGeometry(s.value("geometry").toByteArray());
@@ -119,7 +135,7 @@ MainWindow::MainWindow() {
     updateSceneTabs();
     updateUndoActions();
     syncViewToggles();
-    QTimer::singleShot(0, this, [this] { view_->zoomExtents(); view_->setFocus(); });
+    QTimer::singleShot(0, this, [this] { view_->zoomExtents(); view_->setFocus(); checkRecovery(); });
 }
 
 MainWindow::~MainWindow() = default;
@@ -165,6 +181,10 @@ void MainWindow::buildTools() {
     view_->registerTool(new WalkTool(view_, false));
     view_->registerTool(new WalkTool(view_, true));
     view_->registerTool(new PositionCameraTool(view_));
+    view_->registerTool(new SandboxScratchTool(view_));
+    view_->registerTool(new SmooveTool(view_));
+    view_->registerTool(new FlipEdgeTool(view_));
+    view_->registerTool(new DrapeTool(view_));
     paint->currentMaterial = [this] { return materials_ ? materials_->current() : -1; };
     paint->sampled = [this](int m) { if (materials_) materials_->setCurrent(m); };
     text->editText = [this](QString& t) {
@@ -381,6 +401,12 @@ void MainWindow::buildActions() {
     addToolAct("lookaround", "Look Around", QKeySequence(), "lookaround");
     addToolAct("poscam", "Position Camera", QKeySequence(), "poscam");
     addAct("text3d", "3D Text…", QKeySequence(), [this] { text3D(); }, "text3d");
+    addToolAct("sbscratch", "From Scratch", QKeySequence(), "sbscratch");
+    addToolAct("smoove", "Smoove", QKeySequence(), "smoove");
+    addToolAct("flipedge", "Flip Edge", QKeySequence(), "flipedge");
+    addToolAct("drape", "Drape", QKeySequence(), "drape");
+    addAct("sbcontours", "From Contours", QKeySequence(), [this] { fromContours(); }, "sbcontours");
+    addAct("sbdetail", "Add Detail", QKeySequence(), [this] { addDetail(); });
     addAct("solid_outer", "Outer Shell", QKeySequence(), [this] { solidOp((int)SolidOp::OuterShell); }, "solid");
     addAct("solid_union", "Union", QKeySequence(), [this] { solidOp((int)SolidOp::Union); });
     addAct("solid_subtract", "Subtract", QKeySequence(), [this] { solidOp((int)SolidOp::Subtract); });
@@ -391,6 +417,12 @@ void MainWindow::buildActions() {
     addAct("modelinfo", "Model Info…", QKeySequence(), [this] { modelInfo(); });
     addAct("shortcuts", "Keyboard Shortcuts", QKeySequence("F1"), [this] { shortcutsHelp(); });
     addAct("about", "About Gable", QKeySequence(), [this] { about(); });
+    addAct("preferences", "Preferences…", QKeySequence("Ctrl+,"), [this] { preferences(); });
+    addAct("divide", "Divide…", QKeySequence(), [this] { divideEdge(); });
+    addAct("weld", "Weld Edges", QKeySequence(), [this] { weldEdges(); });
+    addAct("explodecurve", "Explode Curve", QKeySequence(), [this] { explodeCurve(); });
+    addAct("playscenes", "Play", QKeySequence(), [this] { playScenes(act_["playscenes"]->isChecked()); });
+    act_["playscenes"]->setCheckable(true);
 }
 
 void MainWindow::buildMenus() {
@@ -432,6 +464,10 @@ void MainWindow::buildMenus() {
     for (auto id : {"intersectmodel", "intersectsel", "intersectctx"}) inter->addAction(act_[id]);
     edit->addAction(act_["reversefaces"]);
     edit->addAction(act_["orientfaces"]);
+    edit->addSeparator();
+    edit->addAction(act_["divide"]);
+    edit->addAction(act_["weld"]);
+    edit->addAction(act_["explodecurve"]);
 
     auto* view = mb->addMenu("&View");
     view->addAction(act_["scenetabs"]);
@@ -449,6 +485,8 @@ void MainWindow::buildMenus() {
     anim->addAction(act_["addscene"]);
     anim->addAction(act_["nextscene"]);
     anim->addAction(act_["prevscene"]);
+    anim->addSeparator();
+    anim->addAction(act_["playscenes"]);
 
     auto* cam = mb->addMenu("&Camera");
     cam->addAction(act_["prevview"]);
@@ -474,6 +512,9 @@ void MainWindow::buildMenus() {
     for (auto id : {"arc", "arc2", "arc3", "pie"}) arcs->addAction(toolAct_[id]);
     auto* shapes = draw->addMenu("Shapes");
     for (auto id : {"rect", "rotrect", "circle", "polygon"}) shapes->addAction(toolAct_[id]);
+    auto* sbd = draw->addMenu("Sandbox");
+    sbd->addAction(act_["sbcontours"]);
+    sbd->addAction(toolAct_["sbscratch"]);
 
     auto* tools = mb->addMenu("&Tools");
     tools->addAction(toolAct_["select"]);
@@ -487,9 +528,15 @@ void MainWindow::buildMenus() {
     for (auto id : {"tape", "protractor", "axes", "dimension", "text"}) tools->addAction(toolAct_[id]);
     tools->addAction(act_["text3d"]);
     tools->addAction(toolAct_["section"]);
+    auto* sbt = tools->addMenu("Sandbox");
+    sbt->addAction(toolAct_["smoove"]);
+    sbt->addAction(toolAct_["drape"]);
+    sbt->addAction(act_["sbdetail"]);
+    sbt->addAction(toolAct_["flipedge"]);
 
     auto* win = mb->addMenu("&Window");
     win->addAction(act_["modelinfo"]);
+    win->addAction(act_["preferences"]);
     win->addSeparator();
     for (auto t : {"Entity Info", "Materials", "Components", "Styles", "Tags", "Scenes", "Shadows", "Fog", "Outliner", "Soften Edges"}) {
         QString title = t;
@@ -534,7 +581,8 @@ void MainWindow::buildToolbars() {
     g->setSpacing(1);
     QStringList ids = {"select", "eraser", "line", "freehand", "rect", "rotrect", "circle", "polygon", "arc2", "arc", "arc3", "pie",
                        "pushpull", "followme", "move", "rotate", "scale", "offset", "paint", "", "tape", "protractor", "dimension", "text",
-                       "axes", "text3d", "section", "", "orbit", "pan", "zoom", "zoomwindow", "poscam", "walk", "lookaround", ""};
+                       "axes", "text3d", "section", "", "orbit", "pan", "zoom", "zoomwindow", "poscam", "walk", "lookaround", "",
+                       "sbcontours", "sbscratch", "smoove", "drape", "flipedge", ""};
     int i = 0;
     for (auto& id : ids) {
         if (!id.isEmpty()) {
@@ -710,6 +758,7 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     QSettings s;
     s.setValue("geometry", saveGeometry());
     s.setValue("windowState", saveState());
+    QFile::remove(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/autosave.gbl");
     e->accept();
 }
 
@@ -1044,11 +1093,13 @@ void MainWindow::makeComponentDialog() {
     auto* desc = new QLineEdit;
     auto* glue = new QCheckBox("Glue to faces");
     auto* face = new QCheckBox("Always face camera");
+    auto* cut = new QCheckBox("Cut opening (when glued to a face)");
     auto* repl = new QCheckBox("Replace selection with component");
     repl->setChecked(true);
     form->addRow("Definition:", name);
     form->addRow("Description:", desc);
     form->addRow("", glue);
+    form->addRow("", cut);
     form->addRow("", face);
     form->addRow("", repl);
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -1065,6 +1116,8 @@ void MainWindow::makeComponentDialog() {
         doc_->model.defs[def].description = desc->text();
         doc_->model.defs[def].glue = glue->isChecked();
         doc_->model.defs[def].alwaysFaceCamera = face->isChecked();
+        doc_->model.defs[def].cutsOpening = cut->isChecked();
+        if (cut->isChecked()) doc_->model.defs[def].glue = true;
         if (!repl->isChecked()) {
             // keep the original geometry: undo the replacement by exploding a copy back
             Instance in = doc_->active().insts[idx];
@@ -1441,6 +1494,11 @@ void MainWindow::contextMenu(const QPoint& at) {
     if (ne) {
         m.addSeparator();
         m.addAction("Soften/Smooth Edges", [this] { tray_->showPanel("Soften Edges"); });
+        if (ne == 1 && sel.size() == 1) m.addAction(act_["divide"]);
+        if (ne > 1) m.addAction(act_["weld"]);
+        bool anyCurve = false;
+        for (int e : doc_->selectedEdges()) if (doc_->active().edges[e].curve >= 0) anyCurve = true;
+        if (anyCurve) m.addAction(act_["explodecurve"]);
     }
     if (sel.size() == 1 && sel[0].kind == EntKind::Section) {
         int i = sel[0].id;
@@ -1611,6 +1669,240 @@ void MainWindow::shortcutsHelp() {
     connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     lay->addWidget(bb);
     dlg.exec();
+}
+
+void MainWindow::checkRecovery() {
+    QString fn = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/autosave.gbl";
+    QFileInfo fi(fn);
+    if (!fi.exists() || fi.size() == 0) return;
+    auto r = QMessageBox::question(this, "Recover Model",
+                                   QString("Gable did not close normally. Recover the model auto-saved at %1?")
+                                       .arg(fi.lastModified().toString("d MMM yyyy hh:mm")));
+    if (r == QMessageBox::Yes) {
+        QString err;
+        if (doc_->load(fn, &err)) {
+            doc_->filePath.clear();
+            doc_->modified = true;
+            updateTitle();
+            view_->zoomExtents();
+        }
+    }
+    QFile::remove(fn);
+}
+
+void MainWindow::loadShortcuts() {
+    QSettings s;
+    s.beginGroup("shortcuts");
+    for (auto& key : s.childKeys()) {
+        auto it = act_.find(key);
+        if (it != act_.end()) it->second->setShortcut(QKeySequence(s.value(key).toString()));
+    }
+    s.endGroup();
+    for (auto& [id, a] : toolAct_) {
+        QString tip = QString(a->text()).remove('&');
+        if (!a->shortcut().isEmpty()) tip += "  (" + a->shortcut().toString(QKeySequence::NativeText) + ")";
+        a->setToolTip(tip);
+    }
+}
+
+void MainWindow::preferences() {
+    QDialog dlg(this);
+    dlg.setWindowTitle("Preferences");
+    dlg.resize(620, 680);
+    auto* lay = new QVBoxLayout(&dlg);
+    auto* tabs = new QTabWidget;
+    lay->addWidget(tabs);
+    // --- Shortcuts
+    auto* sw = new QWidget;
+    auto* sl = new QVBoxLayout(sw);
+    auto* filter = new QLineEdit;
+    filter->setPlaceholderText("Filter commands");
+    filter->setClearButtonEnabled(true);
+    sl->addWidget(filter);
+    auto* table = new QTableWidget;
+    table->setColumnCount(2);
+    table->setHorizontalHeaderLabels({"Command", "Shortcut"});
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
+    table->setColumnWidth(1, 220);
+    table->verticalHeader()->hide();
+    std::vector<std::pair<QString, QString>> rows;
+    for (auto& [id, a] : act_) rows.push_back({QString(a->text()).remove('&'), id});
+    std::sort(rows.begin(), rows.end());
+    table->setRowCount((int)rows.size());
+    std::map<QString, QKeySequenceEdit*> editors;
+    for (int i = 0; i < (int)rows.size(); ++i) {
+        auto* item = new QTableWidgetItem(rows[i].first);
+        item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+        table->setItem(i, 0, item);
+        auto* ed = new QKeySequenceEdit(act_[rows[i].second]->shortcut());
+        table->setCellWidget(i, 1, ed);
+        editors[rows[i].second] = ed;
+    }
+    sl->addWidget(table);
+    auto* reset = new QPushButton("Reset All to Defaults");
+    sl->addWidget(reset, 0, Qt::AlignRight);
+    connect(filter, &QLineEdit::textChanged, &dlg, [table](const QString& t) {
+        for (int i = 0; i < table->rowCount(); ++i) table->setRowHidden(i, !table->item(i, 0)->text().contains(t, Qt::CaseInsensitive));
+    });
+    connect(reset, &QPushButton::clicked, &dlg, [&] {
+        for (auto& [id, ed] : editors) ed->setKeySequence(defaultShortcuts_[id]);
+    });
+    tabs->addTab(sw, "Shortcuts");
+    // --- General
+    auto* gw = new QWidget;
+    auto* gf = new QFormLayout(gw);
+    QSettings st;
+    auto* autosave = new QSpinBox;
+    autosave->setRange(0, 120);
+    autosave->setSuffix(" min");
+    autosave->setSpecialValueText("Off");
+    autosave->setValue(st.value("autosaveMinutes", 5).toInt());
+    gf->addRow("Auto-save every:", autosave);
+    tabs->addTab(gw, "General");
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    lay->addWidget(bb);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    if (dlg.exec() != QDialog::Accepted) return;
+    // detect conflicts
+    std::map<QString, QString> used;
+    for (auto& [id, ed] : editors) {
+        QString k = ed->keySequence().toString();
+        if (k.isEmpty()) continue;
+        if (used.count(k)) {
+            QMessageBox::warning(this, "Shortcuts", QString("\"%1\" is assigned to both \"%2\" and \"%3\". The second assignment was cleared.")
+                                                        .arg(k, QString(act_[used[k]]->text()).remove('&'), QString(act_[id]->text()).remove('&')));
+            ed->clear();
+            continue;
+        }
+        used[k] = id;
+    }
+    st.beginGroup("shortcuts");
+    st.remove("");
+    for (auto& [id, ed] : editors) {
+        QKeySequence ks = ed->keySequence();
+        act_[id]->setShortcut(ks);
+        if (ks != defaultShortcuts_[id]) st.setValue(id, ks.toString());
+    }
+    st.endGroup();
+    st.setValue("autosaveMinutes", autosave->value());
+    if (autosave->value() > 0) autosave_.start(autosave->value() * 60 * 1000);
+    else autosave_.stop();
+    loadShortcuts();
+}
+
+void MainWindow::divideEdge() {
+    auto es = doc_->selectedEdges();
+    if (es.size() != 1) return;
+    bool ok;
+    int n = QInputDialog::getInt(this, "Divide", "Number of segments:", 2, 2, 999, 1, &ok);
+    if (!ok) return;
+    Entities& E = doc_->active();
+    int e = es[0];
+    int vb = E.edges[e].v[1];
+    Vec3 a = E.verts[E.edges[e].v[0]].p, b = E.verts[vb].p;
+    doc_->begin("Divide");
+    int cur = e;
+    for (int k = 1; k < n && cur >= 0; ++k) {
+        int m = geom::splitEdge(E, cur, a + (b - a) * ((double)k / n));
+        cur = E.findEdge(m, vb);
+    }
+    E.touch();
+    doc_->commit();
+    doc_->clearSelection();
+}
+
+void MainWindow::weldEdges() {
+    auto es = doc_->selectedEdges();
+    if (es.size() < 2) return;
+    Entities& E = doc_->active();
+    doc_->begin("Weld Edges");
+    Curve c;
+    c.closed = false;
+    E.curves.push_back(c);
+    int id = (int)E.curves.size() - 1;
+    for (int e : es) E.edges[e].curve = id;
+    E.touch();
+    doc_->commit();
+}
+
+void MainWindow::explodeCurve() {
+    Entities& E = doc_->active();
+    doc_->begin("Explode Curve");
+    for (int e : doc_->selectedEdges()) E.edges[e].curve = -1;
+    E.touch();
+    doc_->commit();
+}
+
+void MainWindow::playScenes(bool on) {
+    QSignalBlocker b(act_["playscenes"]);
+    act_["playscenes"]->setChecked(on && !doc_->model.scenes.empty());
+    if (on && !doc_->model.scenes.empty()) {
+        playIndex_ = std::max(0, sceneTabs_->currentIndex()) - 1;
+        playTimer_.start(2600);
+        int n = (int)doc_->model.scenes.size();
+        playIndex_ = (playIndex_ + 1 + n) % n;
+        sceneTabs_->setCurrentIndex(playIndex_);
+        scenes_->applyScene(playIndex_);
+    } else playTimer_.stop();
+}
+
+void MainWindow::fromContours() {
+    const Entities& A = doc_->active();
+    std::vector<Vec3> pts;
+    BBox box;
+    auto addEdge = [&](const Vec3& a, const Vec3& b) {
+        pts.push_back(a);
+        pts.push_back(b);
+        box.add(a);
+        box.add(b);
+    };
+    for (auto& r : doc_->sel) {
+        if (r.kind == EntKind::Edge) {
+            const Edge& Ed = A.edges[r.id];
+            addEdge(A.verts[Ed.v[0]].p, A.verts[Ed.v[1]].p);
+        } else if (r.kind == EntKind::Instance) {
+            Entities flat;
+            flattenInstance(doc_->model, A.insts[r.id], Mat4(), flat);
+            for (auto& Ed : flat.edges)
+                if (Ed.alive) addEdge(flat.verts[Ed.v[0]].p, flat.verts[Ed.v[1]].p);
+        }
+    }
+    if (pts.size() < 3) {
+        QMessageBox::information(this, "From Contours", "Select contour lines (edges or groups of edges) first.");
+        return;
+    }
+    // densify long segments so the surface follows the contours
+    double step = std::max(box.size().x, box.size().y) / 60;
+    std::vector<Vec3> dense;
+    for (size_t i = 0; i + 1 < pts.size(); i += 2) {
+        Vec3 a = pts[i], b = pts[i + 1];
+        int n = std::max(1, (int)std::ceil((b - a).length() / std::max(step, 1.0)));
+        for (int k = 0; k <= n; ++k) dense.push_back(a + (b - a) * ((double)k / n));
+    }
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    doc_->begin("Sandbox From Contours");
+    int def = doc_->model.addDef("Terrain", true);
+    Entities T;
+    int n = sandbox::tinFromPoints(T, dense);
+    doc_->model.defs[def].ents = std::move(T);
+    Instance in;
+    in.def = def;
+    doc_->active().insts.push_back(in);
+    doc_->active().touch();
+    doc_->commit();
+    QApplication::restoreOverrideCursor();
+    doc_->setSelection({{EntKind::Instance, (int)doc_->active().insts.size() - 1}});
+    statusBar()->showMessage(QString("Created terrain with %1 triangles").arg(n), 4000);
+}
+
+void MainWindow::addDetail() {
+    auto fs = doc_->selectedFaces();
+    if (fs.empty()) return;
+    doc_->begin("Add Detail");
+    sandbox::subdivide(doc_->active(), fs);
+    doc_->commit();
 }
 
 void MainWindow::about() {

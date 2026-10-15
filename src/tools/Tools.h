@@ -626,3 +626,76 @@ private:
 };
 
 }  // namespace gable
+
+namespace gable {
+
+// ---- Sandbox (terrain) tools
+class SandboxScratchTool : public InferTool {
+public:
+    explicit SandboxScratchTool(Viewport* v) : InferTool(v) {}
+    QString id() const override { return "sbscratch"; }
+    QString title() const override { return "From Scratch"; }
+    void reset() override { stage_ = 0; inf().reset(); }
+    void mousePress(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override { infer(e); }
+    bool keyPress(QKeyEvent* e) override { return lockKeys(e); }
+    bool keyRelease(QKeyEvent* e) override { return lockRelease(e); }
+    void vcbEnter(const QString& s) override;
+    QString vcbLabel() const override { return stage_ == 0 ? "Grid Spacing" : "Length"; }
+    void draw(Overlay& ov) override;
+    QString status() const override { return stage_ == 0 ? "Click the grid origin. Type a grid spacing first if needed." : (stage_ == 1 ? "Click to set the grid length." : "Click to set the grid width."); }
+    bool busy() const override { return stage_ > 0; }
+private:
+    int stage_ = 0;
+    double cell_ = 1000;
+    Vec3 o_, x_;
+    void finish(const Vec3& p);
+};
+
+class SmooveTool : public InferTool {
+public:
+    explicit SmooveTool(Viewport* v) : InferTool(v) {}
+    QString id() const override { return "smoove"; }
+    QString title() const override { return "Smoove"; }
+    void reset() override { active_ = false; }
+    void mousePress(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    void mouseRelease(const MouseEv& e) override;
+    void vcbEnter(const QString& s) override;
+    QString vcbLabel() const override { return active_ ? "Offset" : "Radius"; }
+    void draw(Overlay& ov) override;
+    QString status() const override { return "Click a terrain surface and move up or down. Type a radius before clicking."; }
+    bool busy() const override { return active_; }
+private:
+    bool active_ = false;
+    double radius_ = 3000, dz_ = 0;
+    double pressX_ = 0, pressY_ = 0;
+    InstPath path_;
+    Mat4 xf_;
+    Vec3 centerW_, hoverW_;
+    bool hoverOk_ = false;
+    void apply(double dz);
+};
+
+class FlipEdgeTool : public Tool {
+public:
+    explicit FlipEdgeTool(Viewport* v) : Tool(v) {}
+    QString id() const override { return "flipedge"; }
+    QString title() const override { return "Flip Edge"; }
+    void mousePress(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    QString status() const override { return "Click the diagonal edge between two triangles to flip it."; }
+    QCursor cursor() const override { return Qt::PointingHandCursor; }
+};
+
+class DrapeTool : public Tool {
+public:
+    explicit DrapeTool(Viewport* v) : Tool(v) {}
+    QString id() const override { return "drape"; }
+    QString title() const override { return "Drape"; }
+    void mousePress(const MouseEv& e) override;
+    QString status() const override { return "Select edges first, then click the terrain to drape them onto it."; }
+    QCursor cursor() const override { return Qt::PointingHandCursor; }
+};
+
+}  // namespace gable

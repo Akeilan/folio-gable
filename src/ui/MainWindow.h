@@ -94,6 +94,18 @@ private:
     void deleteGuides();
     void hideRest(bool on);
     void doAutosave();
+    void preferences();
+    void loadShortcuts();
+    void divideEdge();
+    void weldEdges();
+    void explodeCurve();
+    void playScenes(bool on);
+    void checkRecovery();
+    void fromContours();
+    void addDetail();
+    QTimer playTimer_;
+    int playIndex_ = 0;
+    std::map<QString, QKeySequence> defaultShortcuts_;
 };
 
 }  // namespace gable
