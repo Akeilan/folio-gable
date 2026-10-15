@@ -70,7 +70,7 @@ private:
     bool save();
     bool saveAs();
     void importFile();
-    void exportModel();
+    void exportModel(const QString& forcedExt = QString());
     void exportImage();
     void print();
     void addRecent(const QString& path);

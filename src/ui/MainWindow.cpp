@@ -227,6 +227,8 @@ void MainWindow::buildActions() {
     addAct("saveas", "Save &As…", QKeySequence("Ctrl+Shift+S"), [this] { saveAs(); });
     addAct("import", "&Import…", QKeySequence("Ctrl+I"), [this] { importFile(); });
     addAct("export3d", "Export 3D Model…", QKeySequence(), [this] { exportModel(); });
+    addAct("exportstl", "Export STL…", QKeySequence(), [this] { exportModel("stl"); });
+    addAct("exportobj", "Export OBJ…", QKeySequence(), [this] { exportModel("obj"); });
     addAct("export2d", "Export 2D Graphic…", QKeySequence(), [this] { exportImage(); });
     addAct("print", "&Print…", QKeySequence::Print, [this] { print(); });
     addAct("quit", "E&xit", QKeySequence::Quit, [this] { close(); });
@@ -439,6 +441,8 @@ void MainWindow::buildMenus() {
     file->addAction(act_["import"]);
     auto* exp = file->addMenu("Export");
     exp->addAction(act_["export3d"]);
+    exp->addAction(act_["exportstl"]);
+    exp->addAction(act_["exportobj"]);
     exp->addAction(act_["export2d"]);
     file->addSeparator();
     file->addAction(act_["print"]);
@@ -847,7 +851,7 @@ bool MainWindow::openFile(const QString& path) {
 void MainWindow::open() {
     if (!maybeSave()) return;
     QSettings s;
-    QString fn = QFileDialog::getOpenFileName(this, "Open Model", s.value("lastDir").toString(),
+    QString fn = QFileDialog::getOpenFileName(this, "Open Model", s.value("lastDir", QDir::homePath()).toString(),
                                               "Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf);;All files (*)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -868,7 +872,7 @@ bool MainWindow::save() {
 
 bool MainWindow::saveAs() {
     QSettings s;
-    QString fn = QFileDialog::getSaveFileName(this, "Save Model", s.value("lastDir").toString() + "/Untitled.gbl", "Gable models (*.gbl)");
+    QString fn = QFileDialog::getSaveFileName(this, "Save Model", s.value("lastDir", QDir::homePath()).toString() + "/Untitled.gbl", "Gable models (*.gbl)");
     if (fn.isEmpty()) return false;
     if (!fn.endsWith(".gbl", Qt::CaseInsensitive)) fn += ".gbl";
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -902,7 +906,7 @@ void MainWindow::refreshRecent() {
 
 void MainWindow::importFile() {
     QSettings s;
-    QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir").toString(),
+    QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir", QDir::homePath()).toString(),
                                               "3D models (*.obj *.stl *.dae *.dxf *.gbl);;Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Gable (*.gbl)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -941,52 +945,81 @@ void MainWindow::importFile() {
     view_->zoomSelection();
 }
 
-void MainWindow::exportModel() {
+void MainWindow::exportModel(const QString& forcedExt) {
     QSettings s;
-    QString sel;
-    QString fn = QFileDialog::getSaveFileName(this, "Export 3D Model", s.value("lastDir").toString() + "/model.dae",
-                                              "COLLADA (*.dae);;Wavefront OBJ (*.obj);;STL (*.stl);;DXF (*.dxf)", &sel);
-    if (fn.isEmpty()) return;
-    QString ext = QFileInfo(fn).suffix().toLower();
-    if (ext.isEmpty()) {
-        ext = sel.contains("obj") ? "obj" : sel.contains("stl") ? "stl" : sel.contains("dxf") ? "dxf" : "dae";
-        fn += "." + ext;
-    }
+    struct Fmt { const char* ext; const char* name; };
+    static const Fmt fmts[] = {{"stl", "STL (3D printing)"}, {"obj", "Wavefront OBJ"}, {"dae", "COLLADA"}, {"dxf", "AutoCAD DXF"}};
+    QString ext = forcedExt;
     QDialog dlg(this);
-    dlg.setWindowTitle("Export Options");
+    dlg.setWindowTitle("Export 3D Model");
     auto* form = new QFormLayout(&dlg);
+    auto* fmt = new QComboBox;
+    for (auto& f : fmts) fmt->addItem(QString("%1 (*.%2)").arg(f.name, f.ext), QString(f.ext));
+    if (ext.isEmpty()) ext = s.value("lastExport3d", "stl").toString();
+    fmt->setCurrentIndex(std::max(0, fmt->findData(ext)));
     auto* units = new QComboBox;
     units->addItems({"Millimetres", "Centimetres", "Metres", "Inches", "Feet"});
-    units->setCurrentIndex(ext == "stl" ? 0 : (ext == "obj" ? 2 : 0));
     auto* yup = new QCheckBox("Y-up (for game engines / some renderers)");
     auto* edges = new QCheckBox("Export edges");
     auto* selOnly = new QCheckBox("Selection only");
     selOnly->setEnabled(!doc_->sel.empty() && doc_->editPath.empty());
-    auto* binary = new QCheckBox("Binary STL");
-    binary->setChecked(true);
-    binary->setEnabled(ext == "stl");
+    selOnly->setChecked(selOnly->isEnabled());
+    auto* binary = new QCheckBox("Binary STL (smaller; ASCII if unchecked)");
+    binary->setChecked(s.value("stlBinary", true).toBool());
+    form->addRow("Format:", fmt);
     form->addRow("Units:", units);
     form->addRow("", yup);
     form->addRow("", edges);
     form->addRow("", selOnly);
     form->addRow("", binary);
-    if (ext == "dae") units->setEnabled(false);
+    auto sync = [&] {
+        QString e = fmt->currentData().toString();
+        binary->setEnabled(e == "stl");
+        edges->setEnabled(e == "obj" || e == "dxf");
+        units->setEnabled(e != "dae");
+        units->setCurrentIndex(e == "obj" ? 2 : 0);
+        yup->setChecked(false);
+    };
+    sync();
+    connect(fmt, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, [&](int) { sync(); });
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText("Export…");
     form->addRow(bb);
     connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     if (dlg.exec() != QDialog::Accepted) return;
+    ext = fmt->currentData().toString();
+    s.setValue("lastExport3d", ext);
+    s.setValue("stlBinary", binary->isChecked());
+
+    QString base = doc_->filePath.isEmpty() ? QString("model") : QFileInfo(doc_->filePath).completeBaseName();
+    QString dir = s.value("lastDir", QDir::homePath()).toString();
+    QString filter = QString("%1 (*.%2)").arg(fmt->currentText().section(" (", 0, 0), ext);
+    QFileDialog fd(this, "Export " + fmt->currentText().section(" (", 0, 0), dir, filter);
+    fd.setAcceptMode(QFileDialog::AcceptSave);
+    fd.setDefaultSuffix(ext);
+    fd.selectFile(base + "." + ext);
+    if (fd.exec() != QDialog::Accepted || fd.selectedFiles().isEmpty()) return;
+    QString fn = fd.selectedFiles().first();
+    // Whatever name was typed, the file gets the chosen format's extension.
+    if (QFileInfo(fn).suffix().toLower() != ext) fn += "." + ext;
+    s.setValue("lastDir", QFileInfo(fn).absolutePath());
+
     static const double f[] = {1, 10, 1000, 25.4, 304.8};
     ExportOptions eo;
     eo.scale = ext == "dae" ? 1.0 : f[units->currentIndex()];
     eo.swapYZ = yup->isChecked();
-    eo.exportEdges = edges->isChecked();
+    eo.exportEdges = edges->isEnabled() && edges->isChecked();
     eo.binary = binary->isChecked();
     QString err;
     std::vector<EntRef> selv = doc_->sel;
+    QApplication::setOverrideCursor(Qt::WaitCursor);
     bool ok = gable::exportFile(doc_->model, fn, eo, &err, selOnly->isChecked() ? &selv : nullptr);
-    if (!ok) QMessageBox::warning(this, "Export", err);
-    else statusBar()->showMessage("Exported " + fn, 4000);
+    QApplication::restoreOverrideCursor();
+    if (!ok) { QMessageBox::warning(this, "Export", err); return; }
+    QString msg = "Exported " + QFileInfo(fn).fileName();
+    if (ext == "stl" && !err.isEmpty()) msg += " — " + err;
+    statusBar()->showMessage(msg, 8000);
 }
 
 void MainWindow::exportImage() {
@@ -1015,8 +1048,17 @@ void MainWindow::exportImage() {
     connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     if (dlg.exec() != QDialog::Accepted) return;
     QSettings s;
-    QString fn = QFileDialog::getSaveFileName(this, "Export Image", s.value("lastDir").toString() + "/view.png", "PNG (*.png);;JPEG (*.jpg)");
+    QString imgSel;
+    QString fn = QFileDialog::getSaveFileName(this, "Export Image", s.value("lastDir", QDir::homePath()).toString() + "/view.png",
+                                              "PNG (*.png);;JPEG (*.jpg *.jpeg)", &imgSel);
     if (fn.isEmpty()) return;
+    {
+        QString sx = QFileInfo(fn).suffix().toLower();
+        bool wantJpg = imgSel.startsWith("JPEG");
+        if (sx != "png" && sx != "jpg" && sx != "jpeg") fn += wantJpg ? ".jpg" : ".png";
+        else if (wantJpg && sx == "png") fn = fn.left(fn.size() - 3) + "jpg";
+    }
+    s.setValue("lastDir", QFileInfo(fn).absolutePath());
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QImage img = view_->renderImage(w->value(), h->value(), transp->isChecked());
     QApplication::restoreOverrideCursor();

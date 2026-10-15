@@ -6,7 +6,7 @@ It works the way SketchUp works: sticky geometry, automatic faces, inference, pu
 ## Install
 
 ```
-sudo apt install ./gable_1.0.0_amd64.deb
+sudo apt install ./gable_1.1.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `gable model.gbl`.
@@ -39,7 +39,7 @@ Organizing: groups, components (shared definitions, make unique, glue, cut openi
 Construction: tape measure (guides, resize model), protractor, dimensions (linear, radial), leader and screen text, axes tool, section planes with cut fill.
 Terrain: from contours, from scratch, smoove, drape, add detail, flip edge.
 Display: wireframe, hidden line, shaded, textured, monochrome, X-ray, back edges, profiles, extensions, color by axis/tag, sky and ground, fog, sun shadows by date/time/location.
-Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF; export OBJ, STL, DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
+Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF; export OBJ, STL (watertight check, outward-oriented shells), DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
 
 `.skp` files cannot be opened (the format is proprietary); export them from SketchUp as COLLADA (.dae) and import that.
 

@@ -272,6 +272,44 @@ static void testExport() {
 
 void testHouse();
 void testSandbox();
+static void testSTL() {
+    QTemporaryDir td;
+    Model m;
+    box(m.root, 0, 0, 1000, 600, 400);
+    // reverse one face: export must still be outward and watertight
+    for (int f = 0; f < (int)m.root.faces.size(); ++f) if (m.root.faces[f].alive) { geom::reverseFace(m.root, f); break; }
+    for (bool bin : {true, false}) {
+        ExportOptions eo;
+        eo.binary = bin;
+        QString path = td.path() + (bin ? "/b.stl" : "/a.stl");
+        QString err;
+        CHECK(exportFile(m, path, eo, &err));
+        CHECK(err.isEmpty());
+        Model m2;
+        ImportOptions io;
+        int n = importFile(m2, m2.root, path, io, &err);
+        CHECK(n >= 0);
+        // the import may wrap the mesh in a group; measure whatever came in
+        Entities* E = &m2.root;
+        for (auto& in : m2.root.insts) if (in.alive && in.def >= 0) E = &m2.defs[in.def].ents;
+        int fc = 0;
+        for (auto& f : E->faces) if (f.alive) ++fc;
+        CHECK(fc == 6);
+        CHECK(geom::isSolid(*E));
+        NEAR(geom::volume(*E), 1000.0 * 600 * 400, 1);
+        std::printf("stl %s: faces=%d vol=%.0f\n", bin ? "binary" : "ascii", fc, geom::volume(*E));
+    }
+    // empty model fails cleanly
+    Model e;
+    QString err;
+    CHECK(!exportFile(e, td.path() + "/e.stl", ExportOptions(), &err) && !err.isEmpty());
+    // open box reports open edges
+    Model o;
+    box(o.root, 0, 0, 100, 100, 100);
+    for (int f = 0; f < (int)o.root.faces.size(); ++f) if (o.root.faces[f].alive) { o.root.removeFace(f); break; }
+    CHECK(exportFile(o, td.path() + "/o.stl", ExportOptions(), &err) && err.contains("open edge"));
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -285,6 +323,7 @@ int main(int argc, char** argv) {
     testExport();
     testHouse();
     testSandbox();
+    testSTL();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

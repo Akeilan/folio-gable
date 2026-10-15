@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("Gable");
     QApplication::setOrganizationName("Gable");
-    QApplication::setApplicationVersion("1.0.0");
+    QApplication::setApplicationVersion("1.1.0");
     QApplication::setDesktopFileName("gable");
     QApplication::setWindowIcon(QIcon(gable::appIconPixmap(256)));
     gable::MainWindow w;

@@ -176,13 +176,21 @@ InfResult Inference::compute(double x, double y) {
                      p = q1;
                      return true;
                  }()) {
-        } else if (res.onFace && std::fabs(res.facePlane.n.dot(lockDir)) > 0.02) {
-            Ray lr{L0, lockDir};
-            double t = lr.hit(res.facePlane);
-            p = std::isnan(t) ? closestOnLineToRay(L0, lockDir, ray) : lr.at(t);
-            double sx, sy;
-            if (!screenPt(p, sx, sy) || std::hypot(sx - x, sy - y) > 60) p = closestOnLineToRay(L0, lockDir, ray);
-        } else p = closestOnLineToRay(L0, lockDir, ray);
+        } else {
+            p = closestOnLineToRay(L0, lockDir, ray);
+            // Snap to where the locked line pierces the face under the cursor, when that point is
+            // near the cursor and is not the line's own start (e.g. the face being pushed).
+            if (res.onFace && std::fabs(res.facePlane.n.dot(lockDir)) > 0.02) {
+                Ray lr{L0, lockDir};
+                double t = lr.hit(res.facePlane);
+                if (!std::isnan(t)) {
+                    Vec3 q = lr.at(t);
+                    double sx, sy;
+                    if ((q - L0).length() > cam->pixelSize(L0) * 3 && screenPt(q, sx, sy) && std::hypot(sx - x, sy - y) < pxTol * 1.5)
+                        p = q;
+                }
+            }
+        }
         res.type = lockAxis >= 0 && lockAxis < 3 ? InfType::OnAxis : InfType::Parallel;
         res.p = p;
         res.axis = lockAxis;
@@ -305,8 +313,9 @@ InfResult Inference::compute(double x, double y) {
                 return res;
             }
 
-    // 2) anchor axis intersected with alignment from a tracked point
-    if (enabled && !anchorAx.empty()) {
+    // 2) anchor axis intersected with alignment from a tracked point (an edge under the cursor wins:
+    //    ending a line exactly on that edge is what makes it join)
+    if (enabled && !anchorAx.empty() && !dr.edge.valid()) {
         auto [sd, ai, q, d] = anchorAx[0];
         for (auto& T : tracked) {
             for (int k = 0; k < 3; ++k) {
@@ -363,6 +372,12 @@ InfResult Inference::compute(double x, double y) {
         res.dir = d;
         res.hasLine = true; res.la = anchor; res.lb = q; res.lineColor = axisColor(ai);
         res.tip = axisName(ai);
+        // length snapping first, so face piercing and point alignment below stay exact
+        if (snapLength && doc->model.units.lengthSnap) {
+            double L = (res.p - anchor).dot(d);
+            double s = doc->model.units.snapLength;
+            if (s > 0) res.p = anchor + d * (std::round(L / s) * s);
+        }
         // if a face is under the cursor and the axis pierces it nearby, snap to that
         if (res.onFace && std::fabs(res.facePlane.n.dot(d)) > 0.05) {
             Ray lr{anchor, d};
@@ -382,11 +397,6 @@ InfResult Inference::compute(double x, double y) {
                 res.tip = "From Point";
                 break;
             }
-        }
-        if (snapLength && doc->model.units.lengthSnap) {
-            double L = (res.p - anchor).dot(d);
-            double s = doc->model.units.snapLength;
-            if (s > 0) res.p = anchor + d * (std::round(L / s) * s);
         }
         return res;
     }
