@@ -166,12 +166,16 @@ InfResult Inference::compute(double x, double y) {
         Vec3 L0 = lockFromArrow && hasAnchor ? anchor : lockPt;
         Vec3 p;
         if (dr.vertex.valid()) p = L0 + lockDir * (dr.vertex.point - L0).dot(lockDir);
-        else if (dr.edge.valid()) {
-            Vec3 a, b;
-            edgeEnds(dr.edge, a, b);
-            double t, s;
-            if (closestLineLine(L0, lockDir, a, b - a, t, s) && s >= -1e-6 && s <= 1 + 1e-6) p = L0 + lockDir * t;
-            else p = closestOnLineToRay(L0, lockDir, ray);
+        else if (dr.edge.valid() && [&] {
+                     Vec3 a, b;
+                     edgeEnds(dr.edge, a, b);
+                     double t, s;
+                     if (!closestLineLine(L0, lockDir, a, b - a, t, s) || s < -1e-6 || s > 1 + 1e-6) return false;
+                     Vec3 q1 = L0 + lockDir * t, q2 = a + (b - a) * s;
+                     if ((q1 - q2).length() > cam->pixelSize(q2) * 4) return false;  // line must really cross the edge
+                     p = q1;
+                     return true;
+                 }()) {
         } else if (res.onFace && std::fabs(res.facePlane.n.dot(lockDir)) > 0.02) {
             Ray lr{L0, lockDir};
             double t = lr.hit(res.facePlane);

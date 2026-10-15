@@ -181,9 +181,37 @@ BBox Document::selectionBBox() const {
 
 // ---------------------------------------------------------------- undo
 
+std::shared_ptr<Document::Snapshot> Document::takeSnapshot() {
+    auto snap = std::make_shared<Snapshot>();
+    // metadata without geometry
+    Entities rootTmp = std::move(model.root);
+    std::vector<Entities> defTmp;
+    defTmp.reserve(model.defs.size());
+    for (auto& d : model.defs) defTmp.push_back(std::move(d.ents));
+    snap->meta = model;
+    model.root = std::move(rootTmp);
+    for (size_t i = 0; i < model.defs.size(); ++i) model.defs[i].ents = std::move(defTmp[i]);
+    auto share = [](std::pair<uint64_t, std::shared_ptr<const Entities>>& cache, const Entities& e) {
+        if (!cache.second || cache.first != e.rev) {
+            cache.second = std::make_shared<const Entities>(e);
+            cache.first = e.rev;
+        }
+        return cache.second;
+    };
+    // The root and the entities being edited are always copied (they may have been changed
+    // without a revision bump); other definitions are shared while their revision is unchanged.
+    rootCache_.second.reset();
+    snap->root = share(rootCache_, model.root);
+    defCache_.resize(model.defs.size());
+    int act = activeDef();
+    if (act >= 0 && act < (int)defCache_.size()) defCache_[act].second.reset();
+    for (size_t i = 0; i < model.defs.size(); ++i) snap->defs.push_back(share(defCache_[i], model.defs[i].ents));
+    return snap;
+}
+
 void Document::begin(const QString& name) {
     if (opActive_) commit();
-    opSnapshot_ = saveModel(model, false);
+    opSnapshot_ = takeSnapshot();
     opName_ = name;
     opActive_ = true;
 }
@@ -194,7 +222,7 @@ void Document::commit() {
     undo_.push_back({opName_, opSnapshot_, editPath});
     if (undo_.size() > 200) undo_.erase(undo_.begin());
     redo_.clear();
-    opSnapshot_.clear();
+    opSnapshot_.reset();
     pruneSelection();
     notifyChanged();
     emit undoStateChanged();
@@ -205,13 +233,21 @@ void Document::cancel() {
     opActive_ = false;
     UndoEntry e{opName_, opSnapshot_, editPath};
     restore(e);
-    opSnapshot_.clear();
+    opSnapshot_.reset();
 }
 
 void Document::restore(const UndoEntry& e) {
     CameraState cam = model.camera;
-    QString err;
-    loadModel(model, e.data, &err);
+    const Snapshot& s = *e.snap;
+    model = s.meta;
+    model.root = *s.root;
+    for (size_t i = 0; i < model.defs.size() && i < s.defs.size(); ++i) model.defs[i].ents = *s.defs[i];
+    model.root.invalidateIndex();
+    for (auto& d : model.defs) d.ents.invalidateIndex();
+    // caches now describe exactly the restored state
+    rootCache_ = {model.root.rev, s.root};
+    defCache_.assign(s.defs.size(), {});
+    for (size_t i = 0; i < s.defs.size(); ++i) defCache_[i] = {model.defs[i].ents.rev, s.defs[i]};
     model.camera = cam;  // undo does not move the camera
     editPath = e.path;
     // validate path
@@ -233,7 +269,7 @@ void Document::undo() {
     if (undo_.empty()) return;
     UndoEntry e = undo_.back();
     undo_.pop_back();
-    redo_.push_back({e.name, saveModel(model, false), editPath});
+    redo_.push_back({e.name, takeSnapshot(), editPath});
     restore(e);
     emit undoStateChanged();
 }
@@ -242,7 +278,7 @@ void Document::redo() {
     if (redo_.empty()) return;
     UndoEntry e = redo_.back();
     redo_.pop_back();
-    undo_.push_back({e.name, saveModel(model, false), editPath});
+    undo_.push_back({e.name, takeSnapshot(), editPath});
     restore(e);
     emit undoStateChanged();
 }
@@ -257,6 +293,8 @@ void Document::newModel() {
     selSet_.clear();
     undo_.clear();
     redo_.clear();
+    rootCache_ = {};
+    defCache_.clear();
     modified = false;
     emit contextChanged();
     emit selectionChanged();
@@ -277,6 +315,8 @@ bool Document::load(const QString& path, QString* err) {
     selSet_.clear();
     undo_.clear();
     redo_.clear();
+    rootCache_ = {};
+    defCache_.clear();
     modified = false;
     emit contextChanged();
     emit selectionChanged();

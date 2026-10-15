@@ -615,7 +615,11 @@ void MainWindow::buildStatus() {
         QString t = vcb_->text();
         vcb_->clear();
         view_->setFocus();
-        if (view_->tool()) view_->tool()->vcbEnter(t);
+        if (view_->tool()) {
+            view_->tool()->vcbEnter(t);
+            if (view_->tool()) emit view_->statusChanged(view_->tool()->status());
+            vcbLabel_->setText(view_->tool()->vcbLabel());
+        }
         view_->update();
     });
     vcb_->installEventFilter(this);

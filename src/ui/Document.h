@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QString>
 #include <set>
+#include <memory>
 #include <vector>
 
 namespace gable {
@@ -94,9 +95,18 @@ signals:
 
 private:
     std::set<EntRef> selSet_;
-    struct UndoEntry { QString name; QByteArray data; InstPath path; };
+    // In-memory snapshots share unchanged Entities between undo steps (copy-on-change by revision).
+    struct Snapshot {
+        Model meta;
+        std::shared_ptr<const Entities> root;
+        std::vector<std::shared_ptr<const Entities>> defs;
+    };
+    struct UndoEntry { QString name; std::shared_ptr<Snapshot> snap; InstPath path; };
     std::vector<UndoEntry> undo_, redo_;
-    QByteArray opSnapshot_;
+    std::shared_ptr<Snapshot> opSnapshot_;
+    std::pair<uint64_t, std::shared_ptr<const Entities>> rootCache_;
+    std::vector<std::pair<uint64_t, std::shared_ptr<const Entities>>> defCache_;
+    std::shared_ptr<Snapshot> takeSnapshot();
     QString opName_;
     bool opActive_ = false;
     void restore(const UndoEntry& e);
