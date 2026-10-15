@@ -533,6 +533,43 @@ void Text3DPlaceTool::mousePress(const MouseEv& e) {
     in.xf = xf;
     doc()->begin("Place Component");
     doc()->active().insts.push_back(in);
+    // Cut opening: punch the component's footprint (its faces on local z=0) into the face it sits on.
+    const ComponentDef& D = doc()->model.defs[def];
+    if (D.cutsOpening && cur.onFace && cur.faceHit.path == doc()->editPath) {
+        Entities& A = doc()->active();
+        std::vector<std::vector<Vec3>> loops;
+        for (int f = 0; f < (int)D.ents.faces.size(); ++f) {
+            const Face& F = D.ents.faces[f];
+            if (!F.alive || std::fabs(F.plane.n.z) < 0.999 || std::fabs(F.plane.d) > kTol) continue;
+            std::vector<Vec3> L;
+            for (int v : F.outer) L.push_back(xf.point(D.ents.verts[v].p));
+            loops.push_back(L);
+        }
+        if (loops.empty()) {
+            // fall back to the bounding box footprint
+            BBox b = doc()->model.defBBox(def);
+            if (b.valid())
+                loops.push_back({xf.point(Vec3(b.lo.x, b.lo.y, 0)), xf.point(Vec3(b.hi.x, b.lo.y, 0)),
+                                 xf.point(Vec3(b.hi.x, b.hi.y, 0)), xf.point(Vec3(b.lo.x, b.hi.y, 0))});
+        }
+        int target = cur.faceHit.id;
+        Plane tp = A.faces[target].plane;
+        for (auto& L : loops) {
+            geom::addPolyline(A, L, true);
+            // remove the face that now fills the footprint
+            Vec3 c;
+            for (auto& p : L) c += p;
+            c = c / (double)L.size();
+            for (int f = 0; f < (int)A.faces.size(); ++f)
+                if (A.faces[f].alive && A.faces[f].plane.sameAs(tp) && A.pointInFace(f, c) && A.faces[f].holes.empty()) {
+                    BBox fb;
+                    for (int v : A.faces[f].outer) fb.add(A.verts[v].p);
+                    BBox lb;
+                    for (auto& p : L) lb.add(p);
+                    if ((fb.size() - lb.size()).length() < 1.0) { A.removeFace(f); break; }
+                }
+        }
+    }
     doc()->active().touch();
     doc()->commit();
     doc()->setSelection({{EntKind::Instance, (int)doc()->active().insts.size() - 1}});

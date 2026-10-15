@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Gable
+GenericName=3D Modeler
+Comment=Model buildings, furniture and anything else in 3D
+Exec=gable %f
+Icon=gable
+Terminal=false
+Categories=Graphics;3DGraphics;Engineering;Qt;
+MimeType=application/x-gable-model;
+Keywords=3D;CAD;model;sketch;architecture;push;pull;
+StartupWMClass=gable

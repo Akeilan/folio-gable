@@ -19,6 +19,7 @@ add_library(gablecore STATIC
   src/core/Serializer.cpp
   src/core/FileFormats.cpp
   src/core/Solids.cpp
+  src/core/Sandbox.cpp
 )
 target_include_directories(gablecore PUBLIC src)
 target_link_libraries(gablecore PUBLIC Qt6::Core Qt6::Gui Qt6::Xml OpenGL::GLU)

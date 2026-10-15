@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-gable-model">
+    <comment>Gable 3D model</comment>
+    <icon name="gable"/>
+    <glob pattern="*.gbl"/>
+    <magic priority="60">
+      <match type="string" offset="0" value="GABLEZ1"/>
+    </magic>
+  </mime-type>
+</mime-info>
