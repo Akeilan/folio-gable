@@ -224,6 +224,18 @@ void Document::commit() {
     redo_.clear();
     opSnapshot_.reset();
     pruneSelection();
+    if (qEnvironmentVariableIsSet("GABLE_TESTLOG")) {
+        const Entities& E = active();
+        int loose = 0;
+        for (auto& v : E.verts) {
+            if (!v.alive) continue;
+            int n = 0;
+            for (int e : v.edges) if (E.edges[e].alive) ++n;
+            if (n == 1) ++loose;
+        }
+        qDebug("COMMIT %s: verts=%d edges=%d faces=%d looseEnds=%d", qPrintable(opName_), E.aliveCount(EntKind::Vertex),
+               E.aliveCount(EntKind::Edge), E.aliveCount(EntKind::Face), loose);
+    }
     notifyChanged();
     emit undoStateChanged();
 }

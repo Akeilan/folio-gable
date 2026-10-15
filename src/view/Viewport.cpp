@@ -64,6 +64,8 @@ void Viewport::setTool(const QString& id) {
     }
     if (doc->inOperation()) doc->commit();
     inference.reset();
+    picker.exVerts.clear();
+    picker.exInsts.clear();
     overlay.clear();
     hover.clear();
     tool_ = t;

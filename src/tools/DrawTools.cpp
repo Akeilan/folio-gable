@@ -220,10 +220,17 @@ void LineTool::mouseMove(const MouseEv& e) {
 
 void LineTool::placeEnd(const Vec3& p) {
     if ((p - start_).length() < kTol) return;
+    auto liveFaces = [&] {
+        int n = 0;
+        for (auto& f : doc()->active().faces) n += f.alive;
+        return n;
+    };
+    int before = liveFaces();
     doc()->begin("Line");
     geom::addLine(doc()->active(), toLocal(start_), toLocal(p));
     doc()->commit();
-    if (p.near(chainStart_, kTol * 10)) {
+    // Like the reference app: the chain ends when it closes a loop or creates a face.
+    if (p.near(chainStart_, kTol * 10) || liveFaces() > before) {
         reset();
         return;
     }

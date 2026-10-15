@@ -30,6 +30,7 @@ public:
     struct DeepResult {
         PickHit vertex, edge, face, guide, guidePoint, instanceFace;
         std::vector<PickHit> edges;   // all edges within tolerance (nearest first)
+        std::vector<PickHit> verts;   // all visible vertices within tolerance (nearest first)
     };
     // Picks everything visible (inside instances too).
     DeepResult deep(double x, double y, double vtxTol = 9, double edgeTol = 6) const;

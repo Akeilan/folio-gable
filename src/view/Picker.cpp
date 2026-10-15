@@ -110,15 +110,20 @@ void Picker::walk(int def, const Entities& E, const Mat4& xf, const InstPath& pa
             r.edges.push_back(h);
         }
         if (sd < vtol + 2) {
+            if (vdone.empty()) vdone.assign(E.verts.size(), 0);
             for (int k = 0; k < 2; ++k) {
+                int vi = Ed.v[k];
+                if (vi < (int)vdone.size()) { if (vdone[vi]) continue; vdone[vi] = 1; }
                 Vec3 p = k ? b : a;
                 double sx, sy, dd;
                 if (!cam->project(p, sx, sy, &dd)) continue;
                 if (cam->s->perspective && dd <= 0) continue;
                 double d2 = std::hypot(sx - x, sy - y);
-                if (d2 < vtol && (d2 < r.vertex.screenDist - 0.5 || (std::fabs(d2 - r.vertex.screenDist) <= 0.5 && dd < r.vertex.depth))) {
-                    r.vertex.kind = EntKind::Vertex; r.vertex.id = Ed.v[k]; r.vertex.path = path; r.vertex.xf = xf;
-                    r.vertex.point = p; r.vertex.depth = dd; r.vertex.screenDist = d2; r.vertex.def = def;
+                if (d2 < vtol) {
+                    PickHit h;
+                    h.kind = EntKind::Vertex; h.id = vi; h.path = path; h.xf = xf;
+                    h.point = p; h.depth = dd; h.screenDist = d2; h.def = def;
+                    r.verts.push_back(h);
                 }
             }
         }
@@ -189,7 +194,22 @@ Picker::DeepResult Picker::deep(double x, double y, double vtol, double etol) co
         double tol = std::max(0.05, cam->pixelSize(h.point) * 0.5);
         return std::fabs(facePlane.dist(h.point)) > tol;
     };
-    if (r.vertex.valid() && occluded(r.vertex)) r.vertex = PickHit();
+    // Choose the nearest visible vertex: a hidden vertex closer on screen must not mask a visible one.
+    {
+        std::vector<PickHit> vs;
+        for (auto& v : r.verts)
+            if (!occluded(v)) vs.push_back(v);
+        const InstPath& ap = doc->editPath;
+        std::sort(vs.begin(), vs.end(), [&](const PickHit& a, const PickHit& b) {
+            if (std::fabs(a.screenDist - b.screenDist) > 0.75) return a.screenDist < b.screenDist;
+            // coincident on screen: prefer the active context (so new lines join it), then the nearer one
+            bool aa = a.path == ap, ba = b.path == ap;
+            if (aa != ba) return aa;
+            return a.depth < b.depth;
+        });
+        r.verts = vs;
+        r.vertex = vs.empty() ? PickHit() : vs[0];
+    }
     std::vector<PickHit> es;
     for (auto& e : r.edges)
         if (!occluded(e)) es.push_back(e);

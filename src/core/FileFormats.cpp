@@ -9,6 +9,8 @@
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QUrl>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -324,11 +326,96 @@ static bool importSTL(Model&, Entities& E, const QString& path, const ImportOpti
     return true;
 }
 
+// Makes an STL-ready triangle soup: drops degenerate triangles, makes the winding agree with the
+// normal, and orients every closed shell outward (by signed volume). Returns the number of open
+// (non-manifold) edges.
+static int prepareSTL(std::vector<WorldTri>& tris) {
+    std::vector<WorldTri> keep;
+    keep.reserve(tris.size());
+    for (auto& t : tris) {
+        Vec3 c = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]);
+        if (c.length() < 1e-12) continue;
+        if (!t.n.isZero() && c.dot(t.n) < 0) std::swap(t.p[1], t.p[2]);
+        keep.push_back(t);
+    }
+    tris.swap(keep);
+    for (auto& t : tris) t.n = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).normalized();
+    // weld positions
+    std::map<std::tuple<long long, long long, long long>, int> ids;
+    auto key = [](const Vec3& p) {
+        return std::make_tuple((long long)std::llround(p.x * 1e3), (long long)std::llround(p.y * 1e3), (long long)std::llround(p.z * 1e3));
+    };
+    std::vector<std::array<int, 3>> tv(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i)
+        for (int k = 0; k < 3; ++k) {
+            auto it = ids.emplace(key(tris[i].p[k]), (int)ids.size()).first;
+            tv[i][k] = it->second;
+        }
+    // undirected edge -> triangles
+    std::map<std::pair<int, int>, std::vector<int>> em;
+    for (size_t i = 0; i < tris.size(); ++i)
+        for (int k = 0; k < 3; ++k) {
+            int a = tv[i][k], b = tv[i][(k + 1) % 3];
+            if (a == b) continue;
+            em[{std::min(a, b), std::max(a, b)}].push_back((int)i);
+        }
+    int open = 0;
+    for (auto& [e, ts] : em) if (ts.size() != 2) ++open;
+    // shells (connected through manifold edges), each consistently oriented by propagation
+    std::vector<int> shell(tris.size(), -1);
+    std::vector<char> flip(tris.size(), 0);
+    auto dirOf = [&](int t, int a, int b) {  // +1 if t walks a->b, -1 if b->a
+        for (int k = 0; k < 3; ++k) {
+            if (tv[t][k] == a && tv[t][(k + 1) % 3] == b) return 1;
+            if (tv[t][k] == b && tv[t][(k + 1) % 3] == a) return -1;
+        }
+        return 0;
+    };
+    int nsh = 0;
+    for (size_t s0 = 0; s0 < tris.size(); ++s0) {
+        if (shell[s0] >= 0) continue;
+        std::vector<int> stack{(int)s0}, members;
+        shell[s0] = nsh;
+        bool closed = true;
+        while (!stack.empty()) {
+            int t = stack.back(); stack.pop_back();
+            members.push_back(t);
+            for (int k = 0; k < 3; ++k) {
+                int a = tv[t][k], b = tv[t][(k + 1) % 3];
+                if (a == b) continue;
+                auto& ts = em[{std::min(a, b), std::max(a, b)}];
+                if (ts.size() != 2) { closed = false; continue; }
+                int o = ts[0] == t ? ts[1] : ts[0];
+                if (shell[o] >= 0) continue;
+                shell[o] = nsh;
+                // neighbours must traverse the shared edge in opposite directions
+                int dt = dirOf(t, a, b) * (flip[t] ? -1 : 1);
+                int dn = dirOf(o, a, b);
+                flip[o] = (dn == dt);
+                stack.push_back(o);
+            }
+        }
+        for (int t : members) if (flip[t]) { std::swap(tris[t].p[1], tris[t].p[2]); std::swap(tv[t][1], tv[t][2]); }
+        if (closed) {
+            double vol = 0;
+            for (int t : members) vol += tris[t].p[0].dot(tris[t].p[1].cross(tris[t].p[2]));
+            if (vol < 0)
+                for (int t : members) { std::swap(tris[t].p[1], tris[t].p[2]); std::swap(tv[t][1], tv[t][2]); }
+        }
+        ++nsh;
+    }
+    for (auto& t : tris) t.n = (t.p[1] - t.p[0]).cross(t.p[2] - t.p[0]).normalized();
+    return open;
+}
+
 static bool exportSTL(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel) {
     std::vector<WorldTri> tris;
     collectWorld(m, tris, nullptr, true, sel);
+    if (tris.empty()) { if (err) *err = "There are no faces to export."; return false; }
+    int open = prepareSTL(tris);
     QFile f(path);
-    if (!f.open(QIODevice::WriteOnly)) { if (err) *err = "Cannot write file."; return false; }
+    if (!f.open(QIODevice::WriteOnly)) { if (err) *err = "Cannot write " + path; return false; }
+    if (err) *err = open ? QString("warning: %1 open edge%2, the mesh is not watertight").arg(open).arg(open == 1 ? "" : "s") : QString();
     if (opt.binary) {
         QByteArray hdr(80, ' ');
         memcpy(hdr.data(), "Gable STL export", 16);
@@ -349,6 +436,8 @@ static bool exportSTL(const Model& m, const QString& path, const ExportOptions& 
         }
     } else {
         QTextStream ts(&f);
+        ts.setRealNumberNotation(QTextStream::SmartNotation);
+        ts.setRealNumberPrecision(9);
         ts << "solid gable\n";
         for (auto& t : tris) {
             Vec3 nn = outN(t.n, opt);
