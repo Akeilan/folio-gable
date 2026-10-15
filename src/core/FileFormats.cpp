@@ -247,7 +247,7 @@ static bool exportOBJ(const Model& m, const QString& path, const ExportOptions& 
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) { if (err) *err = "Cannot write file."; return false; }
     QString mtlName = QFileInfo(path).completeBaseName() + ".mtl";
     QTextStream ts(&f);
-    ts << "# Exported by Gable\nmtllib " << mtlName << "\n";
+    ts << "# Exported by Folio Gable\nmtllib " << mtlName << "\n";
     std::map<int, std::vector<const WorldTri*>> byMat;
     for (auto& t : tris) byMat[t.material].push_back(&t);
     int vbase = 1, nbase = 1;
@@ -418,7 +418,7 @@ static bool exportSTL(const Model& m, const QString& path, const ExportOptions& 
     if (err) *err = open ? QString("warning: %1 open edge%2, the mesh is not watertight").arg(open).arg(open == 1 ? "" : "s") : QString();
     if (opt.binary) {
         QByteArray hdr(80, ' ');
-        memcpy(hdr.data(), "Gable STL export", 16);
+        memcpy(hdr.data(), "Folio Gable STL export", 22);
         f.write(hdr);
         quint32 n = (quint32)tris.size();
         f.write((const char*)&n, 4);
@@ -855,7 +855,7 @@ static bool exportDAE(const Model& m, const QString& path, const ExportOptions& 
     QTextStream ts(&f);
     ts << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
           "<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">\n"
-          "<asset><contributor><authoring_tool>Gable</authoring_tool></contributor>"
+          "<asset><contributor><authoring_tool>Folio Gable</authoring_tool></contributor>"
           "<unit meter=\"0.001\" name=\"millimeter\"/><up_axis>Z_UP</up_axis></asset>\n";
     // images
     ts << "<library_images>\n";

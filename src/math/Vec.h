@@ -1,4 +1,4 @@
-// Gable — a native 3D modeler for Linux.
+// Folio Gable — a native 3D modeler for Linux.
 // Double-precision vector math used everywhere in the geometry engine.
 #pragma once
 #include <cmath>

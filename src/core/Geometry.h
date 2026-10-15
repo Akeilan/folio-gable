@@ -1,4 +1,4 @@
-// Gable — geometry engine: sticky edges, automatic face finding, push/pull, etc.
+// Folio Gable — geometry engine: sticky edges, automatic face finding, push/pull, etc.
 #pragma once
 #include "core/Model.h"
 #include <set>
