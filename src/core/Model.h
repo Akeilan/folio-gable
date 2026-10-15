@@ -1,4 +1,4 @@
-// Gable — model data structures.
+// Folio Gable — model data structures.
 #pragma once
 #include "math/Vec.h"
 #include <QString>

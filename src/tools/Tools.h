@@ -1,4 +1,4 @@
-// Gable — all interactive tools.
+// Folio Gable — all interactive tools.
 #pragma once
 #include "tools/Tool.h"
 #include "ui/Document.h"

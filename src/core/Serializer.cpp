@@ -267,7 +267,7 @@ bool loadModel(Model& m, const QByteArray& dataIn, QString* error) {
     quint32 magic, version;
     s >> magic >> version;
     if (magic != kMagic || version > kVersion) {
-        if (error) *error = "Not a Gable model file (or written by a newer version).";
+        if (error) *error = "Not a Folio Gable model file (or written by a newer version).";
         return false;
     }
     Model nm;

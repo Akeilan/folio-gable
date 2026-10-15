@@ -418,7 +418,7 @@ void MainWindow::buildActions() {
     // Window / Help
     addAct("modelinfo", "Model Info…", QKeySequence(), [this] { modelInfo(); });
     addAct("shortcuts", "Keyboard Shortcuts", QKeySequence("F1"), [this] { shortcutsHelp(); });
-    addAct("about", "About Gable", QKeySequence(), [this] { about(); });
+    addAct("about", "About Folio Gable", QKeySequence(), [this] { about(); });
     addAct("preferences", "Preferences…", QKeySequence("Ctrl+,"), [this] { preferences(); });
     addAct("divide", "Divide…", QKeySequence(), [this] { divideEdge(); });
     addAct("weld", "Weld Edges", QKeySequence(), [this] { weldEdges(); });
@@ -681,7 +681,7 @@ void MainWindow::buildStatus() {
 
 void MainWindow::updateTitle() {
     QString name = doc_->filePath.isEmpty() ? "Untitled" : QFileInfo(doc_->filePath).fileName();
-    setWindowTitle(QString("%1%2 - Gable").arg(doc_->modified ? "*" : "", name));
+    setWindowTitle(QString("%1%2 - Folio Gable").arg(doc_->modified ? "*" : "", name));
 }
 
 void MainWindow::updateSceneTabs() {
@@ -808,7 +808,7 @@ void MainWindow::dropEvent(QDropEvent* e) {
 
 bool MainWindow::maybeSave() {
     if (!doc_->modified) return true;
-    auto r = QMessageBox::warning(this, "Gable", "Save changes to the model?", QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    auto r = QMessageBox::warning(this, "Folio Gable", "Save changes to the model?", QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     if (r == QMessageBox::Cancel) return false;
     if (r == QMessageBox::Save) return save();
     return true;
@@ -852,7 +852,7 @@ void MainWindow::open() {
     if (!maybeSave()) return;
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Open Model", s.value("lastDir", QDir::homePath()).toString(),
-                                              "Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf);;All files (*)");
+                                              "Folio Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf);;All files (*)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     openFile(fn);
@@ -872,7 +872,7 @@ bool MainWindow::save() {
 
 bool MainWindow::saveAs() {
     QSettings s;
-    QString fn = QFileDialog::getSaveFileName(this, "Save Model", s.value("lastDir", QDir::homePath()).toString() + "/Untitled.gbl", "Gable models (*.gbl)");
+    QString fn = QFileDialog::getSaveFileName(this, "Save Model", s.value("lastDir", QDir::homePath()).toString() + "/Untitled.gbl", "Folio Gable models (*.gbl)");
     if (fn.isEmpty()) return false;
     if (!fn.endsWith(".gbl", Qt::CaseInsensitive)) fn += ".gbl";
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -907,7 +907,7 @@ void MainWindow::refreshRecent() {
 void MainWindow::importFile() {
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir", QDir::homePath()).toString(),
-                                              "3D models (*.obj *.stl *.dae *.dxf *.gbl);;Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Gable (*.gbl)");
+                                              "3D models (*.obj *.stl *.dae *.dxf *.gbl);;Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Folio Gable (*.gbl)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     QDialog dlg(this);
@@ -1718,7 +1718,7 @@ void MainWindow::checkRecovery() {
     QFileInfo fi(fn);
     if (!fi.exists() || fi.size() == 0) return;
     auto r = QMessageBox::question(this, "Recover Model",
-                                   QString("Gable did not close normally. Recover the model auto-saved at %1?")
+                                   QString("Folio Gable did not close normally. Recover the model auto-saved at %1?")
                                        .arg(fi.lastModified().toString("d MMM yyyy hh:mm")));
     if (r == QMessageBox::Yes) {
         QString err;
@@ -1949,9 +1949,9 @@ void MainWindow::addDetail() {
 
 void MainWindow::about() {
     QMessageBox box(this);
-    box.setWindowTitle("About Gable");
+    box.setWindowTitle("About Folio Gable");
     box.setIconPixmap(appIconPixmap(96));
-    box.setText("<b>Gable 1.0</b><br>A native 3D modeler for Linux.<br><br>"
+    box.setText("<b>Folio Gable " + QApplication::applicationVersion() + "</b><br>The 3D modeler of the Folio office suite.<br><br>"
                 "Sticky geometry, inference, push/pull, groups &amp; components, solid tools, "
                 "sections, shadows, scenes and OBJ/STL/DAE/DXF interchange.");
     box.exec();

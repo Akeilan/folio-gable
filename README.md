@@ -1,4 +1,4 @@
-# Gable
+# Folio Gable
 
 A native 3D modeler for Zorin OS / Ubuntu, written from scratch in C++17, Qt 6 and OpenGL 3.3.
 It works the way SketchUp works: sticky geometry, automatic faces, inference, push/pull — with the same default keyboard shortcuts.
@@ -6,10 +6,10 @@ It works the way SketchUp works: sticky geometry, automatic faces, inference, pu
 ## Install
 
 ```
-sudo apt install ./gable_1.1.0_amd64.deb
+sudo apt install ./folio-gable_1.2.0_amd64.deb
 ```
 
-Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `gable model.gbl`.
+Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
 
 ## Keyboard (SketchUp defaults)
 

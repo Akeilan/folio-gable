@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Gable
+Name=Folio Gable
 GenericName=3D Modeler
 Comment=Model buildings, furniture and anything else in 3D
-Exec=gable %f
-Icon=gable
+Exec=folio-gable %f
+Icon=folio-gable
 Terminal=false
 Categories=Graphics;3DGraphics;Engineering;Qt;
 MimeType=application/x-gable-model;
-Keywords=3D;CAD;model;sketch;architecture;push;pull;
-StartupWMClass=gable
+Keywords=Folio;Gable;3D;CAD;model;sketch;architecture;push;pull;
+StartupWMClass=folio-gable
