@@ -34,6 +34,7 @@ void PushPullTool::mousePress(const MouseEv& e) {
     }
     Vec3 hit;
     int f = faceUnderCursor(e, &hit);
+    if (qEnvironmentVariableIsSet("GABLE_DEBUG")) qDebug("pushpull press %.0f,%.0f face %d", e.x, e.y, f);
     if (f < 0) return;
     face_ = f;
     active_ = true;
@@ -119,12 +120,14 @@ void PushPullTool::vcbEnter(const QString& s) {
     double d;
     if (!parseLength(s, doc()->model.units, d)) return;
     if (active_) {
-        commit(d);
+        // A typed value goes in the direction currently being dragged (negative flips it).
+        commit(dist_ < 0 ? -d : d);
         return;
     }
     // Adjust the previous push/pull.
     if (haveLast_ && lastResultFace_ >= 0) {
         Entities& E = doc()->active();
+        if (lastDist_ < 0) d = -d;
         if (lastResultFace_ < (int)E.faces.size() && E.faces[lastResultFace_].alive) {
             double delta = d - lastDist_;
             doc()->begin("Push/Pull");
@@ -1011,7 +1014,7 @@ void OffsetTool::commit(double d) {
 void OffsetTool::vcbEnter(const QString& s) {
     double d;
     if (!parseLength(s, doc()->model.units, d)) return;
-    if (active_) commit(d);
+    if (active_) commit(dist_ < 0 ? -d : d);
 }
 
 void OffsetTool::draw(Overlay& ov) {

@@ -329,6 +329,58 @@ std::vector<int> rebuildPlane(Entities& E, const Plane& Pin, const std::unordere
     for (int f = 0; f < (int)E.faces.size(); ++f)
         if (E.faces[f].alive && E.faces[f].plane.sameAs(P)) oldLive.push_back(f);
 
+    // Region of interest: only the part of the plane touched by this change is rebuilt.
+    {
+        BBox roi;
+        for (int e : newEdges)
+            if (e >= 0 && e < (int)E.edges.size() && E.edges[e].alive) { roi.add(E.verts[E.edges[e].v[0]].p); roi.add(E.verts[E.edges[e].v[1]].p); }
+        for (auto& sn : removed)
+            if (sn.plane.sameAs(P) && !sn.loops.empty())
+                for (auto& p : sn.loops[0]) roi.add(p);
+        if (roi.valid()) {
+            std::unordered_set<int> peSet(pe.begin(), pe.end()), keepE;
+            std::vector<int> stack;
+            auto seed = [&](int e) {
+                if (peSet.count(e) && keepE.insert(e).second) stack.push_back(e);
+            };
+            for (int e : pe) {
+                BBox eb;
+                eb.add(E.verts[E.edges[e].v[0]].p);
+                eb.add(E.verts[E.edges[e].v[1]].p);
+                if (bboxOverlap(eb, roi, kPlaneTol)) seed(e);
+            }
+            std::vector<char> faceKept(oldLive.size(), 0);
+            auto keepFace = [&](size_t i) {
+                if (faceKept[i]) return;
+                faceKept[i] = 1;
+                for (int e : E.faceEdges(oldLive[i])) seed(e);
+            };
+            for (size_t i = 0; i < oldLive.size(); ++i)
+                if (bboxOverlap(faceBBox(E, oldLive[i]), roi, kPlaneTol)) keepFace(i);
+            bool grew = true;
+            while (grew) {
+                while (!stack.empty()) {
+                    int e = stack.back();
+                    stack.pop_back();
+                    for (int k = 0; k < 2; ++k)
+                        for (int e2 : E.verts[E.edges[e].v[k]].edges) seed(e2);
+                }
+                grew = false;
+                for (size_t i = 0; i < oldLive.size(); ++i) {
+                    if (faceKept[i]) continue;
+                    for (int e : E.faceEdges(oldLive[i]))
+                        if (keepE.count(e)) { keepFace(i); grew = true; break; }
+                }
+            }
+            pe.assign(keepE.begin(), keepE.end());
+            std::sort(pe.begin(), pe.end());
+            std::vector<int> ol;
+            for (size_t i = 0; i < oldLive.size(); ++i)
+                if (faceKept[i]) ol.push_back(oldLive[i]);
+            oldLive = ol;
+        }
+    }
+
     std::vector<OldPoly> olds;
     for (int f : oldLive) {
         OldPoly op;
@@ -626,17 +678,24 @@ struct PlaneSet {
 }  // namespace
 
 void findFaces(Entities& E, const std::vector<int>& newEdges) {
-    PlaneSet facePlanes;
-    for (auto& F : E.faces)
-        if (F.alive) facePlanes.add(F.plane);
     PlaneSet cand;
+    // Faces whose bounding box holds an endpoint (cheap filter); used to catch edges drawn inside faces.
+    std::vector<std::pair<BBox, int>> fboxes;
+    fboxes.reserve(E.faces.size());
+    for (int f = 0; f < (int)E.faces.size(); ++f)
+        if (E.faces[f].alive) fboxes.push_back({faceBBox(E, f), f});
     for (int e : newEdges) {
         if (e < 0 || !E.edges[e].alive) continue;
         int va = E.edges[e].v[0], vb = E.edges[e].v[1];
         Vec3 A = E.verts[va].p, B = E.verts[vb].p;
         Vec3 d = (B - A).normalized();
-        for (auto& fp : facePlanes.planes)
+        BBox eb;
+        eb.add(A); eb.add(B);
+        for (auto& [fb, f] : fboxes) {
+            if (!bboxOverlap(fb, eb, kPlaneTol)) continue;
+            const Plane& fp = E.faces[f].plane;
             if (std::fabs(fp.dist(A)) < kPlaneTol && std::fabs(fp.dist(B)) < kPlaneTol) cand.add(fp);
+        }
         for (int X : {va, vb}) {
             for (int e2 : E.verts[X].edges) {
                 if (e2 == e || !E.edges[e2].alive) continue;
@@ -1570,7 +1629,7 @@ void transformVertices(Entities& E, const std::vector<int>& verts, const Mat4& m
                 for (int e : E.verts[v].edges) es.push_back(e);
         for (int v : touched)
             for (int e : E.verts[v].edges) es.push_back(e);
-        if (es.size() < 4000) intersectEdges(E, es);
+        if (es.size() < 400) intersectEdges(E, es);
         std::vector<int> ff;
         for (int v : touched)
             if (E.verts[v].alive)
@@ -1792,8 +1851,17 @@ std::vector<EntRef> copyEntities(const Entities& srcIn, const std::vector<EntRef
         }
     }
     if (sticky && touchedExisting && !newEdges.empty()) {
-        intersectEdges(dst, newEdges);
-        findFaces(dst, newEdges);
+        if (newEdges.size() < 1500) intersectEdges(dst, newEdges);
+        // only edges touching pre-existing geometry can close new faces
+        std::vector<int> touching;
+        for (int e : newEdges) {
+            if (!dst.edges[e].alive) continue;
+            for (int k = 0; k < 2; ++k) {
+                int v = dst.edges[e].v[k];
+                if (v < (int)vertsBefore) { touching.push_back(e); break; }
+            }
+        }
+        findFaces(dst, touching);
     }
     dst.touch();
     return result;

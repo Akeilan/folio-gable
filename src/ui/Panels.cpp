@@ -84,10 +84,12 @@ Tray::Tray(QWidget* parent) : QScrollArea(parent) {
     lay_->setContentsMargins(0, 0, 0, 0);
     lay_->setSpacing(0);
     lay_->addStretch(1);
+    lay_->setSizeConstraint(QLayout::SetNoConstraint);
     setWidget(w);
     setWidgetResizable(true);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    setMinimumWidth(280);
+    setMinimumWidth(300);
+    widget()->setMinimumWidth(0);
 }
 
 CollapsibleSection* Tray::addPanel(const QString& title, QWidget* w, bool expanded) {
@@ -150,6 +152,8 @@ void EntityInfoPanel::clearBody() {
 
 QComboBox* EntityInfoPanel::tagCombo(int current) {
     auto* cb = new QComboBox;
+    cb->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    cb->setMinimumContentsLength(8);
     for (auto& t : doc_->model.tags) cb->addItem(t.name);
     cb->setCurrentIndex(current < 0 ? -1 : current);
     connect(cb, QOverload<int>::of(&QComboBox::activated), this, [this](int i) {
@@ -433,7 +437,7 @@ void EntityInfoPanel::refresh() {
     addRow("Tag:", tagCombo(-1));
     if (nf) addRow("Total area:", ro(formatArea(area, U)));
     if (ne) {
-        auto* soft = new QPushButton("Soften + smooth edges");
+        auto* soft = new QPushButton("Soften");
         connect(soft, &QPushButton::clicked, this, [this] {
             doc_->begin("Soften Edges");
             for (int e : doc_->selectedEdges()) doc_->active().edges[e].soft = doc_->active().edges[e].smooth = true;
