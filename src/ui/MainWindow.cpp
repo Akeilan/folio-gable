@@ -1,4 +1,7 @@
 #include "ui/MainWindow.h"
+#include "ui/TitleBar.h"
+#include "ui/Ribbon.h"
+#include "ui/Backstage.h"
 #include "core/FileFormats.h"
 #include "core/Geometry.h"
 #include "core/Serializer.h"
@@ -75,9 +78,9 @@ MainWindow::MainWindow() {
     buildTools();
     buildTray();
     buildActions();
-    buildMenus();
-    buildToolbars();
+    decorateActions();
     buildStatus();
+    buildChrome();
     for (auto& [id, a] : act_) defaultShortcuts_[id] = a->shortcut();
     loadShortcuts();
     connect(&playTimer_, &QTimer::timeout, this, [this] {
@@ -201,7 +204,8 @@ void MainWindow::buildTools() {
 QAction* MainWindow::addAct(const QString& id, const QString& text, const QKeySequence& ks, std::function<void()> fn, const QString& icon) {
     auto* a = new QAction(text, this);
     if (!ks.isEmpty()) a->setShortcut(ks);
-    if (!icon.isEmpty()) a->setIcon(toolIcon(icon));
+    a->setProperty("actionId", id);
+    if (!icon.isEmpty()) a->setProperty("iconName", icon);
     a->setShortcutContext(Qt::WindowShortcut);
     connect(a, &QAction::triggered, this, [fn] { fn(); });
     addAction(a);
@@ -302,8 +306,8 @@ void MainWindow::buildActions() {
     toggle("sectionplanes", "Section Planes", QKeySequence(), [st]() -> bool& { return st->showSectionPlanes; });
     toggle("sectioncuts", "Section Cuts", QKeySequence(), [st]() -> bool& { return st->showSectionCuts; });
     toggle("sectionfill", "Section Fill", QKeySequence(), [st]() -> bool& { return st->sectionFill; });
-    toggle("axes", "Axes", QKeySequence(), [st]() -> bool& { return st->showAxes; });
-    toggle("guides", "Guides", QKeySequence(), [st]() -> bool& { return st->showGuides; });
+    toggle("axes", "Show Axes", QKeySequence(), [st]() -> bool& { return st->showAxes; });
+    toggle("guides", "Show Guides", QKeySequence(), [st]() -> bool& { return st->showGuides; });
     toggle("edges", "Edges", QKeySequence(), [st]() -> bool& { return st->edges; });
     toggle("backedges", "Back Edges", QKeySequence("K"), [st]() -> bool& { return st->backEdges; }, "backedges");
     toggle("profiles", "Profiles", QKeySequence(), [st]() -> bool& { return st->profiles; });
@@ -427,189 +431,6 @@ void MainWindow::buildActions() {
     act_["playscenes"]->setCheckable(true);
 }
 
-void MainWindow::buildMenus() {
-    auto* mb = menuBar();
-    auto* file = mb->addMenu("&File");
-    file->addAction(act_["new"]);
-    file->addAction(act_["open"]);
-    recentMenu_ = file->addMenu("Open Recent");
-    refreshRecent();
-    file->addSeparator();
-    file->addAction(act_["save"]);
-    file->addAction(act_["saveas"]);
-    file->addSeparator();
-    file->addAction(act_["import"]);
-    auto* exp = file->addMenu("Export");
-    exp->addAction(act_["export3d"]);
-    exp->addAction(act_["exportstl"]);
-    exp->addAction(act_["exportobj"]);
-    exp->addAction(act_["export2d"]);
-    file->addSeparator();
-    file->addAction(act_["print"]);
-    file->addSeparator();
-    file->addAction(act_["quit"]);
-
-    auto* edit = mb->addMenu("&Edit");
-    for (auto id : {"undo", "redo"}) edit->addAction(act_[id]);
-    edit->addSeparator();
-    for (auto id : {"cut", "copy", "paste", "pasteinplace", "delete", "deleteguides"}) edit->addAction(act_[id]);
-    edit->addSeparator();
-    for (auto id : {"selectall", "selectnone", "invertsel"}) edit->addAction(act_[id]);
-    edit->addSeparator();
-    edit->addAction(act_["hide"]);
-    auto* unhide = edit->addMenu("Unhide");
-    unhide->addAction(act_["unhidesel"]);
-    unhide->addAction(act_["unhideall"]);
-    edit->addAction(act_["lock"]);
-    edit->addAction(act_["unlock"]);
-    edit->addSeparator();
-    for (auto id : {"makecomponent", "makegroup", "closegroup", "explode", "makeunique"}) edit->addAction(act_[id]);
-    auto* inter = edit->addMenu("Intersect Faces");
-    for (auto id : {"intersectmodel", "intersectsel", "intersectctx"}) inter->addAction(act_[id]);
-    edit->addAction(act_["reversefaces"]);
-    edit->addAction(act_["orientfaces"]);
-    edit->addSeparator();
-    edit->addAction(act_["divide"]);
-    edit->addAction(act_["weld"]);
-    edit->addAction(act_["explodecurve"]);
-
-    auto* view = mb->addMenu("&View");
-    view->addAction(act_["scenetabs"]);
-    view->addSeparator();
-    for (auto id : {"hiddengeom", "sectionplanes", "sectioncuts", "sectionfill", "axes", "guides", "shadows", "fog"}) view->addAction(act_[id]);
-    auto* es = view->addMenu("Edge Style");
-    for (auto id : {"edges", "backedges", "profiles", "extension"}) es->addAction(act_[id]);
-    auto* fs = view->addMenu("Face Style");
-    fs->addAction(act_["xray"]);
-    fs->addSeparator();
-    for (auto id : {"fs_wire", "fs_hidden", "fs_shaded", "fs_textured", "fs_mono"}) fs->addAction(act_[id]);
-    auto* ce = view->addMenu("Component Edit");
-    ce->addAction(act_["hiderest"]);
-    auto* anim = view->addMenu("Animation");
-    anim->addAction(act_["addscene"]);
-    anim->addAction(act_["nextscene"]);
-    anim->addAction(act_["prevscene"]);
-    anim->addSeparator();
-    anim->addAction(act_["playscenes"]);
-
-    auto* cam = mb->addMenu("&Camera");
-    cam->addAction(act_["prevview"]);
-    auto* sv = cam->addMenu("Standard Views");
-    for (auto id : {"view_top", "view_bottom", "view_front", "view_back", "view_left", "view_right", "view_iso"}) sv->addAction(act_[id]);
-    cam->addSeparator();
-    cam->addAction(act_["parallel"]);
-    cam->addAction(act_["perspective"]);
-    cam->addAction(act_["fov"]);
-    cam->addSeparator();
-    for (auto id : {"orbit", "pan", "zoom", "zoomwindow"}) cam->addAction(toolAct_[id]);
-    cam->addAction(act_["zoomextents"]);
-    cam->addAction(act_["zoomsel"]);
-    cam->addAction(act_["alignview"]);
-    cam->addSeparator();
-    for (auto id : {"poscam", "walk", "lookaround"}) cam->addAction(toolAct_[id]);
-
-    auto* draw = mb->addMenu("&Draw");
-    auto* lines = draw->addMenu("Lines");
-    lines->addAction(toolAct_["line"]);
-    lines->addAction(toolAct_["freehand"]);
-    auto* arcs = draw->addMenu("Arcs");
-    for (auto id : {"arc", "arc2", "arc3", "pie"}) arcs->addAction(toolAct_[id]);
-    auto* shapes = draw->addMenu("Shapes");
-    for (auto id : {"rect", "rotrect", "circle", "polygon"}) shapes->addAction(toolAct_[id]);
-    auto* sbd = draw->addMenu("Sandbox");
-    sbd->addAction(act_["sbcontours"]);
-    sbd->addAction(toolAct_["sbscratch"]);
-
-    auto* tools = mb->addMenu("&Tools");
-    tools->addAction(toolAct_["select"]);
-    tools->addAction(toolAct_["eraser"]);
-    tools->addAction(toolAct_["paint"]);
-    tools->addSeparator();
-    for (auto id : {"move", "rotate", "scale", "pushpull", "followme", "offset"}) tools->addAction(toolAct_[id]);
-    auto* solid = tools->addMenu("Solid Tools");
-    for (auto id : {"solid_outer", "solid_intersect", "solid_union", "solid_subtract", "solid_trim", "solid_split"}) solid->addAction(act_[id]);
-    tools->addSeparator();
-    for (auto id : {"tape", "protractor", "axes", "dimension", "text"}) tools->addAction(toolAct_[id]);
-    tools->addAction(act_["text3d"]);
-    tools->addAction(toolAct_["section"]);
-    auto* sbt = tools->addMenu("Sandbox");
-    sbt->addAction(toolAct_["smoove"]);
-    sbt->addAction(toolAct_["drape"]);
-    sbt->addAction(act_["sbdetail"]);
-    sbt->addAction(toolAct_["flipedge"]);
-
-    auto* win = mb->addMenu("&Window");
-    win->addAction(act_["modelinfo"]);
-    win->addAction(act_["preferences"]);
-    win->addSeparator();
-    for (auto t : {"Entity Info", "Materials", "Components", "Styles", "Tags", "Scenes", "Shadows", "Fog", "Outliner", "Soften Edges"}) {
-        QString title = t;
-        win->addAction(title, [this, title] { tray_->showPanel(title); });
-    }
-
-    auto* help = mb->addMenu("&Help");
-    help->addAction(act_["shortcuts"]);
-    help->addAction(act_["about"]);
-}
-
-void MainWindow::buildToolbars() {
-    auto* top = addToolBar("Standard");
-    top->setObjectName("tb_standard");
-    top->setIconSize(QSize(24, 24));
-    for (auto id : {"new", "open", "save"}) top->addAction(act_[id]);
-    top->addSeparator();
-    top->addAction(act_["undo"]);
-    top->addAction(act_["redo"]);
-    top->addSeparator();
-    for (auto id : {"orbit", "pan", "zoom", "zoomwindow"}) top->addAction(toolAct_[id]);
-    top->addAction(act_["zoomextents"]);
-    top->addAction(act_["prevview"]);
-    top->addSeparator();
-    for (auto id : {"view_iso", "view_top", "view_front", "view_right", "view_back", "view_left"}) top->addAction(act_[id]);
-    top->addSeparator();
-    for (auto id : {"xray", "backedges", "fs_wire", "fs_hidden", "fs_shaded", "fs_textured", "fs_mono"}) top->addAction(act_[id]);
-    top->addSeparator();
-    top->addAction(act_["shadows"]);
-    top->addAction(act_["parallel"]);
-    top->addAction(act_["perspective"]);
-
-    auto* left = new QToolBar("Large Tool Set");
-    left->setObjectName("tb_tools");
-    left->setIconSize(QSize(28, 28));
-    left->setOrientation(Qt::Vertical);
-    addToolBar(Qt::LeftToolBarArea, left);
-    // two-column grid
-    auto* grid = new QWidget;
-    auto* g = new QGridLayout(grid);
-    g->setContentsMargins(2, 2, 2, 2);
-    g->setSpacing(1);
-    QStringList ids = {"select", "eraser", "line", "freehand", "rect", "rotrect", "circle", "polygon", "arc2", "arc", "arc3", "pie",
-                       "pushpull", "followme", "move", "rotate", "scale", "offset", "paint", "", "tape", "protractor", "dimension", "text",
-                       "axes", "text3d", "section", "", "orbit", "pan", "zoom", "zoomwindow", "poscam", "walk", "lookaround", "",
-                       "sbcontours", "sbscratch", "smoove", "drape", "flipedge", ""};
-    int i = 0;
-    for (auto& id : ids) {
-        if (!id.isEmpty()) {
-            auto* b = new QToolButton;
-            QAction* a = toolAct_.count(id) ? toolAct_[id] : act_[id];
-            b->setDefaultAction(a);
-            b->setIconSize(QSize(28, 28));
-            b->setAutoRaise(true);
-            g->addWidget(b, i / 2, i % 2);
-        }
-        ++i;
-    }
-    g->setRowStretch(i / 2 + 1, 1);
-    left->addWidget(grid);
-
-    auto* group = addToolBar("Edit");
-    group->setObjectName("tb_edit");
-    group->setIconSize(QSize(24, 24));
-    group->addAction(act_["makegroup"]);
-    group->addAction(act_["makecomponent"]);
-    group->addAction(act_["solid_outer"]);
-}
-
 void MainWindow::buildTray() {
     tray_ = new Tray;
     auto* info = new EntityInfoPanel(doc_);
@@ -642,6 +463,7 @@ void MainWindow::buildTray() {
     tray_->addPanel("Outliner", new OutlinerPanel(doc_), false);
     tray_->addPanel("Soften Edges", new SoftenPanel(doc_), false);
     auto* dock = new QDockWidget("Default Tray", this);
+    trayDock_ = dock;
     dock->setObjectName("dock_tray");
     dock->setWidget(tray_);
     dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable | QDockWidget::DockWidgetClosable);
@@ -682,6 +504,7 @@ void MainWindow::buildStatus() {
 void MainWindow::updateTitle() {
     QString name = doc_->filePath.isEmpty() ? "Untitled" : QFileInfo(doc_->filePath).fileName();
     setWindowTitle(QString("%1%2 - Folio Gable").arg(doc_->modified ? "*" : "", name));
+    if (titleBar_) titleBar_->setTitle(windowTitle());
 }
 
 void MainWindow::updateSceneTabs() {
@@ -699,7 +522,8 @@ void MainWindow::updateUndoActions() {
 
 void MainWindow::syncViewToggles() {
     const Style& s = doc_->model.style;
-    auto set = [&](const char* id, bool v) { QSignalBlocker b(act_[id]); act_[id]->setChecked(v); };
+    // setChecked only emits toggled(), which nothing acts on, so the ribbon buttons follow along
+    auto set = [&](const char* id, bool v) { act_[id]->setChecked(v); };
     set("hiddengeom", s.showHidden);
     set("sectionplanes", s.showSectionPlanes);
     set("sectioncuts", s.showSectionCuts);
@@ -866,6 +690,8 @@ bool MainWindow::save() {
         return false;
     }
     statusBar()->showMessage("Saved " + doc_->filePath, 3000);
+    addRecent(doc_->filePath);
+    saveThumbnail(doc_->filePath);
     updateTitle();
     return true;
 }
@@ -882,6 +708,7 @@ bool MainWindow::saveAs() {
         return false;
     }
     addRecent(fn);
+    saveThumbnail(fn);
     updateTitle();
     return true;
 }

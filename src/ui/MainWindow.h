@@ -4,6 +4,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
+#include <QDockWidget>
 #include <QTabBar>
 #include <QTimer>
 #include <map>
@@ -17,6 +18,12 @@ class MaterialsPanel;
 class ScenesPanel;
 class EntityInfoPanel;
 class StylesPanel;
+class TitleBar;
+class Ribbon;
+struct RibbonTab;
+class Backstage;
+class KeyTips;
+class FramelessResizer;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -28,6 +35,8 @@ public:
 protected:
     void closeEvent(QCloseEvent* e) override;
     bool eventFilter(QObject* o, QEvent* e) override;
+    void resizeEvent(QResizeEvent* e) override;
+    void changeEvent(QEvent* e) override;
     void dragEnterEvent(QDragEnterEvent* e) override;
     void dropEvent(QDropEvent* e) override;
 
@@ -48,14 +57,30 @@ private:
     std::shared_ptr<Model> clipboard_;
     Vec3 clipRef_;
     QMenu* recentMenu_ = nullptr;
+    TitleBar* titleBar_ = nullptr;
+    Ribbon* ribbon_ = nullptr;
+    RibbonTab* groupTab_ = nullptr;
+    Backstage* backstage_ = nullptr;
+    KeyTips* keytips_ = nullptr;
+    FramelessResizer* resizer_ = nullptr;
+    QDockWidget* trayDock_ = nullptr;
+    QStringList qatIds_;
 
     QAction* addAct(const QString& id, const QString& text, const QKeySequence& ks, std::function<void()> fn,
                     const QString& icon = QString());
     QAction* addToolAct(const QString& toolId, const QString& text, const QKeySequence& ks, const QString& icon);
     void buildTools();
     void buildActions();
-    void buildMenus();
-    void buildToolbars();
+    void buildChrome();
+    void buildRibbon();
+    void decorateActions();
+    void applyQat();
+    void showBackstage(const QString& page = "home");
+    void saveThumbnail(const QString& path);
+    QPixmap thumbnailFor(const QString& path) const;
+    void newFromTemplate(int i);
+    void forgetRecent(const QString& path);
+    void placeBackstage();
     void buildTray();
     void buildStatus();
     void updateTitle();

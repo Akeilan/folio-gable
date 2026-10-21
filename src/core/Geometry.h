@@ -1,5 +1,6 @@
 // Folio Gable — geometry engine: sticky edges, automatic face finding, push/pull, etc.
 #pragma once
+#include <string>
 #include "core/Model.h"
 #include <set>
 #include <unordered_set>
@@ -97,6 +98,8 @@ double volume(const Entities& E);
 BBox faceBBox(const Entities& E, int f);
 
 Vec3 newellNormal(const Entities& E, const std::vector<int>& loop);
+// Topology/geometry integrity check; returns human-readable problems (empty = healthy).
+std::vector<std::string> validate(const Entities& E, int maxReports = 20);
 
 }  // namespace geom
 }  // namespace gable
