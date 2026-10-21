@@ -25,8 +25,12 @@ class Backstage;
 class KeyTips;
 class FramelessResizer;
 
+class MainWindow;
+int runAudit(MainWindow* w);   // folio-gable --audit
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
+    friend class Auditor;
 public:
     MainWindow();
     ~MainWindow() override;

@@ -111,7 +111,8 @@ QTabBar#sceneTabs::tab:selected { background: #ffffff; color: @accent_dark; font
 /* task pane (tray) */
 QDockWidget { titlebar-close-icon: none; color: #262626; }
 QDockWidget::title { background: #ffffff; padding: 6px 8px; border-left: 1px solid @ribbon_line; font-size: 11pt; }
-#trayPane, #trayPane > QWidget { background: #ffffff; }
+#trayPane, #trayBody, #trayBody QWidget { background: #ffffff; }
+#trayBody QLineEdit, #trayBody QComboBox, #trayBody QSpinBox, #trayBody QDoubleSpinBox { background: #ffffff; }
 QToolButton[paneHeader="true"] { background: #ffffff; border: none; border-bottom: 1px solid #ececec; text-align: left;
   padding: 5px 4px; font-weight: 600; color: #262626; }
 QToolButton[paneHeader="true"]:hover { background: @tint; }

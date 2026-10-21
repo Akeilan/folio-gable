@@ -393,6 +393,12 @@ def _(ic):
     ic.line(13, 9, 13, 17, stroke=ACCD, width=1.6); ic.line(9, 13, 17, 13, stroke=ACCD, width=1.6)
 
 
+@icon("search")
+def _(ic):
+    ic.circle(13, 13, 8, fill="none", width=2)
+    ic.line(19, 19, 27, 27, width=2.6)
+
+
 @icon("zoomwindow")
 def _(ic):
     ic.rect(3.5, 3.5, 15, 12, fill="none", stroke=ACCD, dash="2 1.5")

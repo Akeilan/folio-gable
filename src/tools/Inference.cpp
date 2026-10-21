@@ -303,6 +303,50 @@ InfResult Inference::compute(double x, double y) {
             return res;
         }
     }
+    // where two edges (or an edge and a guide) cross
+    if (enabled && (dr.edges.size() >= 2 || (dr.edge.valid() && dr.guide.valid()))) {
+        std::vector<std::pair<Vec3, Vec3>> segs;   // (a, b - a)
+        for (size_t i = 0; i < dr.edges.size() && i < 5; ++i) {
+            Vec3 a, b;
+            edgeEnds(dr.edges[i], a, b);
+            segs.push_back({a, b - a});
+        }
+        bool haveGuide = dr.guide.valid();
+        Vec3 gp, gd;
+        if (haveGuide) {
+            const Entities& GE = doc->entitiesAt(dr.guide.path);
+            const Guide& g = GE.guides[dr.guide.id];
+            gp = dr.guide.xf.point(g.p);
+            gd = dr.guide.xf.vector(g.dir);
+        }
+        double bestD = 1e300;
+        Vec3 best;
+        auto tryPair = [&](const Vec3& a, const Vec3& da, bool segA, const Vec3& b, const Vec3& db, bool segB) {
+            double t, u;
+            if (!closestLineLine(a, da, b, db, t, u)) return;
+            if (segA && (t < 1e-6 || t > 1 - 1e-6)) return;   // ends are endpoints, not crossings
+            if (segB && (u < 1e-6 || u > 1 - 1e-6)) return;
+            Vec3 p = a + da * t, q = b + db * u;
+            // only real crossings: a point on both, so a line ending here joins both edges
+            if ((p - q).length() > 0.01) return;
+            double sd = sdist(p);
+            if (sd < pxTol && sd < bestD) { bestD = sd; best = p; }
+        };
+        for (size_t i = 0; i < segs.size(); ++i) {
+            for (size_t j = i + 1; j < segs.size(); ++j)
+                tryPair(segs[i].first, segs[i].second, true, segs[j].first, segs[j].second, true);
+            if (haveGuide) tryPair(segs[i].first, segs[i].second, true, gp, gd, false);
+        }
+        if (bestD < 1e299) {
+            res.type = InfType::Intersection;
+            res.p = best;
+            res.hit = dr.edge;
+            res.tip = "Intersection";
+            track(best);
+            markAxisAlignment(res);
+            return res;
+        }
+    }
     // centers tracked from curves
     if (enabled)
         for (auto& c : centers)

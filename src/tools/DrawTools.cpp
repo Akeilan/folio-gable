@@ -327,11 +327,19 @@ static void planeAxes(const Plane& P, const Inference& inf, Vec3& u, Vec3& v) {
 }
 
 QString RectTool::status() const {
-    if (!rotated_) return stage_ == 0 ? "Select first corner." : "Select opposite corner or enter value.";
+    if (!rotated_) {
+        if (centered_) return stage_ == 0 ? "Select the centre. Ctrl = draw from a corner." : "Select a corner or enter the size. Ctrl = from a corner.";
+        return stage_ == 0 ? "Select first corner. Ctrl = draw from the centre." : "Select opposite corner or enter value. Ctrl = from the centre.";
+    }
     return stage_ == 0 ? "Select first corner." : (stage_ == 1 ? "Select second corner (length and angle)." : "Select third corner (width).");
 }
 
 bool RectTool::keyPress(QKeyEvent* e) {
+    if (!rotated_ && e->key() == Qt::Key_Control && !e->isAutoRepeat()) {
+        // Ctrl draws the rectangle out from its centre (toggles)
+        centered_ = !centered_;
+        return true;
+    }
     if (!rotated_ && stage_ == 0 && !e->isAutoRepeat()) {
         int ax = -1;
         if (e->key() == Qt::Key_Right) ax = 0;
@@ -407,7 +415,8 @@ void RectTool::mouseMove(const MouseEv& e) {
         else if (std::fabs(std::fabs(b) - std::fabs(a) * 0.6180339887) < tol && std::fabs(a) > tol) { b = (b < 0 ? -1 : 1) * std::fabs(a) * 0.6180339887; special_ = "Golden Section"; }
         else if (std::fabs(std::fabs(a) - std::fabs(b) * 0.6180339887) < tol && std::fabs(b) > tol) { a = (a < 0 ? -1 : 1) * std::fabs(b) * 0.6180339887; special_ = "Golden Section"; }
         p1_ = p0_ + u_ * a + v_ * b;
-        setVCB(formatLength(std::fabs(a), doc()->model.units) + ", " + formatLength(std::fabs(b), doc()->model.units));
+        double k = centered_ ? 2.0 : 1.0;
+        setVCB(formatLength(std::fabs(a) * k, doc()->model.units) + ", " + formatLength(std::fabs(b) * k, doc()->model.units));
     } else if (rotated_ && stage_ == 1) {
         setVCB(formatLength((cur.p - p0_).length(), doc()->model.units));
     } else if (rotated_ && stage_ == 2) {
@@ -423,6 +432,7 @@ std::vector<Vec3> RectTool::corners() const {
     if (!rotated_) {
         Vec3 d = p1_ - p0_;
         double a = d.dot(u_), b = d.dot(v_);
+        if (centered_) return {p0_ - u_ * a - v_ * b, p0_ + u_ * a - v_ * b, p0_ + u_ * a + v_ * b, p0_ - u_ * a + v_ * b};
         return {p0_, p0_ + u_ * a, p0_ + u_ * a + v_ * b, p0_ + v_ * b};
     }
     Vec3 w = p2_ - p1_;
@@ -458,8 +468,9 @@ void RectTool::vcbEnter(const QString& s) {
     if (!rotated_ && stage_ == 1) {
         Vec3 d = p1_ - p0_;
         double a = d.dot(u_), b = d.dot(v_);
-        double na = l.size() > 0 && !std::isnan(l[0]) ? l[0] : std::fabs(a);
-        double nb = l.size() > 1 && !std::isnan(l[1]) ? l[1] : std::fabs(b);
+        double k = centered_ ? 0.5 : 1.0;   // from the centre, typed sizes are the whole rectangle
+        double na = l.size() > 0 && !std::isnan(l[0]) ? l[0] * k : std::fabs(a);
+        double nb = l.size() > 1 && !std::isnan(l[1]) ? l[1] * k : std::fabs(b);
         p1_ = p0_ + u_ * (a < 0 ? -na : na) + v_ * (b < 0 ? -nb : nb);
         finish();
     } else if (rotated_ && stage_ == 1 && !l.empty()) {

@@ -1,5 +1,6 @@
 #include "core/Solids.h"
 #include "core/Geometry.h"
+#include <algorithm>
 #include <functional>
 
 namespace gable {
@@ -93,12 +94,59 @@ Cls classify(const Entities& E, int f, const TriSet& other) {
     return back ? Cls::CoSame : Cls::CoOpp;
 }
 
+// The parts of segment p-q that lie on face f (in its plane).
+void clipToFace(const Entities& A, int f, const Vec3& p, const Vec3& q, std::vector<std::pair<Vec3, Vec3>>& out) {
+    const Face& F = A.faces[f];
+    Vec3 d = q - p;
+    double L = d.length();
+    if (L < kTol) return;
+    std::vector<double> ts = {0.0, 1.0};
+    auto loopEdges = [&](const std::vector<int>& lp) {
+        for (size_t i = 0; i < lp.size(); ++i) {
+            Vec3 a = A.verts[lp[i]].p, b = A.verts[lp[(i + 1) % lp.size()]].p;
+            // a loop vertex on the segment
+            for (const Vec3& x : {a, b}) {
+                double t = (x - p).dot(d) / (L * L);
+                if (t > 0 && t < 1 && (p + d * t - x).length() < kTol * 5) ts.push_back(t);
+            }
+            double t, u;
+            if (closestLineLine(p, d, a, b - a, t, u) && t > 0 && t < 1 && u >= -1e-9 && u <= 1 + 1e-9) {
+                if ((p + d * t - (a + (b - a) * u)).length() < kTol * 5) ts.push_back(t);
+            }
+        }
+    };
+    loopEdges(F.outer);
+    for (auto& h : F.holes) loopEdges(h);
+    std::sort(ts.begin(), ts.end());
+    for (size_t i = 0; i + 1 < ts.size(); ++i) {
+        double t0 = ts[i], t1 = ts[i + 1];
+        if ((t1 - t0) * L < kTol) continue;
+        Vec3 mid = p + d * ((t0 + t1) * 0.5);
+        if (A.pointInFace(f, F.plane.project(mid), kTol * 5)) out.push_back({p + d * t0, p + d * t1});
+    }
+}
+
 void splitAgainst(Entities& A, const Entities& B) {
     std::vector<std::pair<Vec3, Vec3>> segs;
     for (int fa = 0; fa < (int)A.faces.size(); ++fa) {
         if (!A.faces[fa].alive) continue;
+        const Plane& PA = A.faces[fa].plane;
         for (int fb = 0; fb < (int)B.faces.size(); ++fb) {
             if (!B.faces[fb].alive) continue;
+            const Face& FB = B.faces[fb];
+            bool coplanar = std::fabs(std::fabs(PA.n.dot(FB.plane.n)) - 1) < 1e-9 &&
+                            std::fabs(PA.dist(B.verts[FB.outer[0]].p)) < 0.01;
+            if (coplanar) {
+                // faces lying on each other: cut A's face along B's outline so each piece is
+                // either covered by B or not, and classifies correctly
+                auto loop = [&](const std::vector<int>& lp) {
+                    for (size_t i = 0; i < lp.size(); ++i)
+                        clipToFace(A, fa, B.verts[lp[i]].p, B.verts[lp[(i + 1) % lp.size()]].p, segs);
+                };
+                loop(FB.outer);
+                for (auto& h : FB.holes) loop(h);
+                continue;
+            }
             auto s = geom::faceFaceSegments(A, fa, B, fb);
             segs.insert(segs.end(), s.begin(), s.end());
         }

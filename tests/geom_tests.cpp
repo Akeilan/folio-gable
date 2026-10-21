@@ -310,6 +310,36 @@ static void testSTL() {
     CHECK(exportFile(o, td.path() + "/o.stl", ExportOptions(), &err) && err.contains("open edge"));
 }
 
+static void testSolidsCoplanar() {
+    // boxes resting on the same ground / sharing walls: coplanar overlapping faces
+    SolidOp ops[] = {SolidOp::Union, SolidOp::Subtract, SolidOp::Intersect, SolidOp::Trim};
+    Vec3 shifts[] = {Vec3(500, 500, 0), Vec3(500, 0, 0), Vec3(1000, 0, 0)};
+    double want[3][4] = {{1.75e9, 0.75e9, 0.25e9, 0.75e9}, {1.5e9, 0.5e9, 0.5e9, 0.5e9}, {2e9, 1e9, 0, 1e9}};
+    for (int k = 0; k < 4; ++k)
+        for (int sh = 0; sh < 3; ++sh) {
+            Model m;
+            int d1 = m.addDef("A", true), d2 = m.addDef("B", true);
+            box(m.defs[d1].ents, 0, 0, 1000, 1000, 1000);
+            box(m.defs[d2].ents, 0, 0, 1000, 1000, 1000);
+            Instance a; a.def = d1;
+            Instance b; b.def = d2; b.xf = Mat4::translation(shifts[sh]);
+            m.root.insts.push_back(a);
+            m.root.insts.push_back(b);
+            QString err;
+            std::vector<int> res;
+            bool ok = solidOperation(m, m.root, 1, 0, ops[k], &err, &res);
+            if (want[sh][k] == 0) { CHECK(ok); continue; }
+            CHECK(ok && !res.empty());
+            if (res.empty()) continue;
+            double v = instanceVolume(m, m.root.insts[res[0]]);
+            NEAR(v, want[sh][k], 1e3);
+            if (k == 0 && sh == 0) {
+                const Entities& R = m.defs[m.root.insts[res[0]].def].ents;
+                CHECK(R.aliveCount(EntKind::Face) == 10);  // 8-sided prism, coplanar pieces merged
+            }
+        }
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -318,6 +348,7 @@ int main(int argc, char** argv) {
     testCylinder();
     testSaveLoad();
     testSolids();
+    testSolidsCoplanar();
     testFollowMe();
     testIntersect();
     testExport();
