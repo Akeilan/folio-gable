@@ -55,8 +55,8 @@ CollapsibleSection::CollapsibleSection(const QString& title, QWidget* content, Q
     header_->setCheckable(true);
     header_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     header_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    header_->setStyleSheet("QToolButton { text-align: left; font-weight: 600; padding: 5px; border: none; "
-                           "border-bottom: 1px solid palette(mid); background: palette(button); }");
+    header_->setProperty("paneHeader", true);
+    header_->setFocusPolicy(Qt::NoFocus);
     lay->addWidget(header_);
     auto* wrap = new QWidget(this);
     auto* wl = new QVBoxLayout(wrap);
@@ -86,6 +86,9 @@ Tray::Tray(QWidget* parent) : QScrollArea(parent) {
     lay_->addStretch(1);
     lay_->setSizeConstraint(QLayout::SetNoConstraint);
     setWidget(w);
+    setObjectName("trayPane");
+    w->setObjectName("trayBody");
+    setFrameShape(QFrame::NoFrame);
     setWidgetResizable(true);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setMinimumWidth(300);
@@ -201,7 +204,27 @@ void EntityInfoPanel::refresh() {
             bool arc = Ed.curve >= 0 && Ed.curve < (int)E.curves.size() && E.curves[Ed.curve].isArc;
             title_->setText(arc ? (E.curves[Ed.curve].closed ? "Circle" : "Arc") : "Edge");
             addRow("Tag:", tagCombo(Ed.tag));
-            addRow("Length:", ro(formatLength(E.edgeLength(r.id), U)));
+            {
+                // typing a new length moves the edge's second end along the edge, as in the reference app
+                auto* len = new QLineEdit(formatLength(E.edgeLength(r.id), U));
+                int eid = r.id;
+                connect(len, &QLineEdit::editingFinished, this, [this, eid, len] {
+                    Entities& A = doc_->active();
+                    if (eid >= (int)A.edges.size() || !A.edges[eid].alive) return;
+                    double L;
+                    if (!parseLength(len->text(), doc_->model.units, L) || L <= kTol) return;
+                    double cur = A.edgeLength(eid);
+                    if (std::fabs(L - cur) < kTol) return;
+                    Vec3 dir = A.edgeDir(eid);
+                    doc_->begin("Edge Length");
+                    geom::transformVertices(A, {A.edges[eid].v[1]}, Mat4::translation(dir * (L - cur)), true);
+                    updating_ = true;
+                    doc_->commit();
+                    updating_ = false;
+                    refresh();
+                });
+                addRow("Length:", len);
+            }
             auto* soft = new QCheckBox("Soft");
             soft->setChecked(Ed.soft);
             auto* smooth = new QCheckBox("Smooth");
@@ -295,7 +318,56 @@ void EntityInfoPanel::refresh() {
             if (b.valid()) {
                 Vec3 s = b.size();
                 double sx = world.vector(Vec3(1, 0, 0)).length(), sy = world.vector(Vec3(0, 1, 0)).length(), sz = world.vector(Vec3(0, 0, 1)).length();
-                addRow("Size:", ro(formatLength(s.x * sx, U) + " × " + formatLength(s.y * sy, U) + " × " + formatLength(s.z * sz, U)));
+                // Position (of the group's origin) and size, both editable
+                auto triple = [&](const Vec3& v, std::function<void(int, double)> set) {
+                    auto* row = new QWidget;
+                    auto* hl = new QHBoxLayout(row);
+                    hl->setContentsMargins(0, 0, 0, 0);
+                    hl->setSpacing(3);
+                    for (int k = 0; k < 3; ++k) {
+                        auto* le = new QLineEdit(formatLength(k == 0 ? v.x : (k == 1 ? v.y : v.z), U));
+                        le->setMinimumWidth(40);
+                        connect(le, &QLineEdit::editingFinished, this, [this, le, k, set] {
+                            double x;
+                            if (parseLength(le->text(), doc_->model.units, x)) set(k, x);
+                        });
+                        hl->addWidget(le);
+                    }
+                    return row;
+                };
+                Vec3 o = world.origin();
+                addRow("Position:", triple(o, [this, id](int k, double x) {
+                    Entities& A = doc_->active();
+                    Mat4 w = doc_->activeXf() * A.insts[id].xf;
+                    Vec3 cur = w.origin();
+                    double c = k == 0 ? cur.x : (k == 1 ? cur.y : cur.z);
+                    if (std::fabs(c - x) < kTol) return;
+                    Vec3 dv(k == 0 ? x - c : 0, k == 1 ? x - c : 0, k == 2 ? x - c : 0);
+                    doc_->begin("Move");
+                    A.insts[id].xf = doc_->activeInv() * Mat4::translation(dv) * w;
+                    A.touch();
+                    updating_ = true;
+                    doc_->commit();
+                    updating_ = false;
+                    refresh();
+                }));
+                Vec3 sz3(s.x * sx, s.y * sy, s.z * sz);
+                addRow("Size:", triple(sz3, [this, id, sz3](int k, double x) {
+                    double c = k == 0 ? sz3.x : (k == 1 ? sz3.y : sz3.z);
+                    if (x <= kTol || c <= kTol || std::fabs(c - x) < kTol) return;
+                    Entities& A = doc_->active();
+                    BBox bb = doc_->model.defBBox(A.insts[id].def);
+                    Vec3 f(1, 1, 1);
+                    (k == 0 ? f.x : (k == 1 ? f.y : f.z)) = x / c;
+                    doc_->begin("Scale");
+                    // scale along the group's own axes, keeping its lowest corner in place
+                    A.insts[id].xf = A.insts[id].xf * Mat4::scalingAbout(bb.lo, f);
+                    A.touch();
+                    updating_ = true;
+                    doc_->commit();
+                    updating_ = false;
+                    refresh();
+                }));
             }
             break;
         }

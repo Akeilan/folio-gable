@@ -3,6 +3,7 @@
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
 #include <QApplication>
+#include <QTimer>
 #include <QFileInfo>
 #include <QFile>
 #include <QDir>
@@ -44,6 +45,10 @@ int main(int argc, char** argv) {
     gable::MainWindow w;
     w.show();
     QStringList args = app.arguments();
+    if (args.contains("--audit")) {
+        QTimer::singleShot(400, &w, [&w] { QCoreApplication::exit(gable::runAudit(&w) ? 1 : 0); });
+        return app.exec();
+    }
     if (args.size() > 1) w.openFile(args[1]);
     return app.exec();
 }

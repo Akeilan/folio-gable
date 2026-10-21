@@ -100,7 +100,7 @@ public:
     RectTool(Viewport* v, bool rotated) : InferTool(v), rotated_(rotated) {}
     QString id() const override { return rotated_ ? "rotrect" : "rect"; }
     QString title() const override { return rotated_ ? "Rotated Rectangle" : "Rectangle"; }
-    void reset() override { stage_ = 0; lockAxis_ = -1; inf().reset(); }
+    void reset() override { stage_ = 0; lockAxis_ = -1; centered_ = false; inf().reset(); }
     void activate() override { reset(); }
     void mousePress(const MouseEv& e) override;
     void mouseRelease(const MouseEv& e) override;
@@ -109,6 +109,7 @@ public:
     bool keyRelease(QKeyEvent* e) override { return lockRelease(e); }
     void vcbEnter(const QString& s) override;
     QString vcbLabel() const override { return rotated_ && stage_ == 1 ? "Length, Angle" : (rotated_ && stage_ == 2 ? "Width, Angle" : "Dimensions"); }
+    bool centered_ = false;
     void draw(Overlay& ov) override;
     QString status() const override;
     bool busy() const override { return stage_ > 0; }
@@ -696,6 +697,36 @@ public:
     void mousePress(const MouseEv& e) override;
     QString status() const override { return "Select edges first, then click the terrain to drape them onto it."; }
     QCursor cursor() const override { return Qt::PointingHandCursor; }
+};
+
+
+// Places an imported picture as a textured rectangle (in a group), sized with the mouse
+// or by typing its width; it stays proportional to the picture.
+class ImageTool : public InferTool {
+public:
+    explicit ImageTool(Viewport* v) : InferTool(v) {}
+    QString id() const override { return "image"; }
+    QString title() const override { return "Place Image"; }
+    bool setImage(const QString& path, QString* err);
+    void reset() override { stage_ = 0; inf().reset(); }
+    void mousePress(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    void vcbEnter(const QString& s) override;
+    QString vcbLabel() const override { return "Width"; }
+    void draw(Overlay& ov) override;
+    QString status() const override {
+        return stage_ == 0 ? "Click to place the corner of the image." : "Click or type a width to size the image.";
+    }
+    bool busy() const override { return stage_ > 0; }
+private:
+    QString name_;
+    QByteArray png_;
+    double aspect_ = 1;     // width / height
+    int stage_ = 0;
+    Vec3 o_, x_, y_, n_;
+    double width_ = 0;
+    void place(double width);
+    void frameFrom(const Vec3& p);
 };
 
 }  // namespace gable

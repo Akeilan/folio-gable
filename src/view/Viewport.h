@@ -45,6 +45,7 @@ public:
     void standardView(int which);  // 0 top 1 bottom 2 front 3 back 4 left 5 right 6 iso
     void setPerspective(bool p);
     void animateTo(const CameraState& target, int ms = 600);
+    void stopAnimation() { animTimer_.stop(); }
     void previousView();
     void pushViewHistory();
 

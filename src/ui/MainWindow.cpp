@@ -188,6 +188,7 @@ void MainWindow::buildTools() {
     view_->registerTool(new SmooveTool(view_));
     view_->registerTool(new FlipEdgeTool(view_));
     view_->registerTool(new DrapeTool(view_));
+    view_->registerTool(new ImageTool(view_));
     paint->currentMaterial = [this] { return materials_ ? materials_->current() : -1; };
     paint->sampled = [this](int m) { if (materials_) materials_->setCurrent(m); };
     text->editText = [this](QString& t) {
@@ -600,22 +601,14 @@ void MainWindow::dropEvent(QDropEvent* e) {
         if (p.isEmpty()) continue;
         QString ext = QFileInfo(p).suffix().toLower();
         if (ext == "gbl") { if (maybeSave()) openFile(p); }
-        else if (ext == "png" || ext == "jpg" || ext == "jpeg") {
-            // image as textured material
-            QImage img(p);
-            if (img.isNull()) continue;
-            doc_->begin("Import Image Material");
-            int m = doc_->model.addMaterial(QFileInfo(p).completeBaseName(), QColor(200, 200, 200));
-            QByteArray png;
-            QBuffer b(&png);
-            b.open(QIODevice::WriteOnly);
-            img.save(&b, "PNG");
-            doc_->model.materials[m].hasTexture = true;
-            doc_->model.materials[m].texturePng = png;
-            doc_->model.materials[m].texH = 1000.0 * img.height() / std::max(1, img.width());
-            doc_->commit();
-            materials_->setCurrent(m);
-            view_->setTool("paint");
+        else if (QStringList{"png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"}.contains(ext)) {
+            // a picture dropped on the window is placed as an image, like Import
+            auto* it = static_cast<ImageTool*>(view_->toolById("image"));
+            QString err;
+            if (!it->setImage(p, &err)) { QMessageBox::warning(this, "Import", err); continue; }
+            view_->setTool("image");
+            view_->setFocus();
+            break;
         } else {
             QString err;
             ImportOptions io;
@@ -734,9 +727,43 @@ void MainWindow::refreshRecent() {
 void MainWindow::importFile() {
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir", QDir::homePath()).toString(),
-                                              "3D models (*.obj *.stl *.dae *.dxf *.gbl);;Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Folio Gable (*.gbl)");
+                                              "3D models and pictures (*.obj *.stl *.dae *.dxf *.gbl *.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;"
+                                              "Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Folio Gable (*.gbl);;"
+                                              "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
+    static const QStringList pics = {"png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"};
+    if (pics.contains(QFileInfo(fn).suffix().toLower())) {
+        bool ok = false;
+        QString use = QInputDialog::getItem(this, "Import Picture", "Use the picture as:",
+                                            {"Image — a picture placed in the model", "Texture — a material to paint faces with"},
+                                            0, false, &ok);
+        if (!ok) return;
+        if (use.startsWith("Texture")) {
+            QImage img(fn);
+            if (img.isNull()) { QMessageBox::warning(this, "Import", "Cannot read the picture."); return; }
+            doc_->begin("Import Texture");
+            int m = doc_->model.addMaterial(QFileInfo(fn).completeBaseName(), QColor(200, 200, 200));
+            QByteArray png;
+            QBuffer b(&png);
+            b.open(QIODevice::WriteOnly);
+            img.save(&b, "PNG");
+            doc_->model.materials[m].hasTexture = true;
+            doc_->model.materials[m].texturePng = png;
+            doc_->model.materials[m].texH = 1000.0 * img.height() / std::max(1, img.width());
+            doc_->commit();
+            materials_->refresh();
+            materials_->setCurrent(m);
+            view_->setTool("paint");
+            return;
+        }
+        auto* it = static_cast<ImageTool*>(view_->toolById("image"));
+        QString err;
+        if (!it->setImage(fn, &err)) { QMessageBox::warning(this, "Import", err); return; }
+        view_->setTool("image");
+        view_->setFocus();
+        return;
+    }
     QDialog dlg(this);
     dlg.setWindowTitle("Import Options");
     auto* form = new QFormLayout(&dlg);
@@ -1628,6 +1655,16 @@ void MainWindow::preferences() {
     autosave->setSpecialValueText("Off");
     autosave->setValue(st.value("autosaveMinutes", 5).toInt());
     gf->addRow("Auto-save every:", autosave);
+    auto* sysFrame = new QCheckBox("Use the system title bar instead of the Folio one (after a restart)");
+    sysFrame->setChecked(st.value("systemTitleBar", false).toBool());
+    gf->addRow("Window:", sysFrame);
+    auto* ribbonMode = new QComboBox;
+    ribbonMode->addItems({"Always show the ribbon", "Show tabs only"});
+    ribbonMode->setCurrentIndex(ribbon_ && ribbon_->mode() == Ribbon::TabsOnly ? 1 : 0);
+    gf->addRow("Ribbon:", ribbonMode);
+    auto* qatShow = new QCheckBox("Show the Quick Access Toolbar");
+    qatShow->setChecked(ribbon_ ? ribbon_->qatShown : true);
+    gf->addRow("", qatShow);
     tabs->addTab(gw, "General");
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     lay->addWidget(bb);
@@ -1656,6 +1693,11 @@ void MainWindow::preferences() {
     }
     st.endGroup();
     st.setValue("autosaveMinutes", autosave->value());
+    st.setValue("systemTitleBar", sysFrame->isChecked());
+    if (ribbon_) {
+        ribbon_->setMode(ribbonMode->currentIndex() == 1 ? Ribbon::TabsOnly : Ribbon::AlwaysShow);
+        if (qatShow->isChecked() != ribbon_->qatShown) { ribbon_->qatShown = qatShow->isChecked(); ribbon_->onQatToggled(ribbon_->qatShown); }
+    }
     if (autosave->value() > 0) autosave_.start(autosave->value() * 60 * 1000);
     else autosave_.stop();
     loadShortcuts();

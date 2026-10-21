@@ -1,5 +1,6 @@
 #include "ui/Icons.h"
 #include <QPainter>
+#include <QSvgRenderer>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QtMath>
@@ -294,27 +295,13 @@ QIcon toolIcon(const QString& name) {
 }
 
 QPixmap appIconPixmap(int size) {
+    // the suite-style app icon (resources/icons/folio-gable.svg)
     QPixmap pm(size, size);
     pm.fill(Qt::transparent);
+    QSvgRenderer r(QString(":/icons/folio-gable.svg"));
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.scale(size / 64.0, size / 64.0);
-    // rounded tile
-    QLinearGradient g(0, 0, 0, 64);
-    g.setColorAt(0, QColor(124, 77, 189));
-    g.setColorAt(1, QColor(75, 37, 133));
-    p.setPen(Qt::NoPen);
-    p.setBrush(g);
-    p.drawRoundedRect(QRectF(2, 2, 60, 60), 13, 13);
-    // isometric gable house (matches resources/icons/folio-gable.svg)
-    auto poly = [](std::initializer_list<QPointF> pts) { return QPolygonF(QVector<QPointF>(pts)); };
-    p.setPen(QPen(QColor(30, 18, 44), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.setBrush(QColor(238, 234, 243));
-    p.drawPolygon(poly({{12.3, 42.9}, {34.8, 55.9}, {34.8, 39.7}, {12.3, 26.7}}));
-    p.setBrush(QColor(194, 186, 210));
-    p.drawPolygon(poly({{34.8, 55.9}, {51.7, 46.2}, {51.7, 29.9}, {43.3, 23.1}, {34.8, 39.7}}));
-    p.setBrush(QColor(252, 251, 254));
-    p.drawPolygon(poly({{12.3, 26.7}, {34.8, 39.7}, {43.3, 23.1}, {20.7, 10.1}}));
+    r.render(&p, QRectF(0, 0, size, size));
     return pm;
 }
 

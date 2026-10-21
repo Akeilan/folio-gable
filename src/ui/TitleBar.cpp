@@ -68,7 +68,7 @@ TitleBar::TitleBar(QWidget* window) : QWidget(window), win_(window) {
     search_->setPlaceholderText("Search (Alt+Q)");
     search_->setFixedWidth(260);
     search_->setClearButtonEnabled(true);
-    search_->addAction(theme::whiteIcon("zoom", 14), QLineEdit::LeadingPosition);
+    search_->addAction(theme::whiteIcon("search", 14), QLineEdit::LeadingPosition);
     h->addWidget(search_);
     h->addSpacing(24);
     min_ = new QToolButton;

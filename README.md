@@ -1,7 +1,7 @@
 # Folio Gable
 
-A native 3D modeler for Zorin OS / Ubuntu, written from scratch in C++17, Qt 6 and OpenGL 3.3.
-It works the way SketchUp works: sticky geometry, automatic faces, inference, push/pull — with the same default keyboard shortcuts.
+The 3D modeler of the Folio office suite (with Folio Writer, Folio Sheets and Folio Draw), written from scratch in C++17, Qt 6 and OpenGL 3.3 for Zorin OS / Ubuntu.
+It models the way SketchUp does — sticky geometry, automatic faces, inference, push/pull, the same default keyboard shortcuts — inside the suite's window: a purple title bar with the Quick Access Toolbar and command search (Alt+Q), a ribbon with KeyTips (tap Alt), and the File view for templates, recent models, export and options.
 
 ## Install
 
@@ -28,7 +28,7 @@ Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from t
 Middle-drag orbits, Shift+middle-drag pans, the wheel zooms at the cursor, middle double-click recenters.
 Hold Shift to lock an inference; → ← ↑ lock red/green/blue, ↓ locks parallel/perpendicular to the last edge.
 Type any value while a tool is active — it goes to the Measurements box: `2500`, `4000,3000`, `5m`, `6'4"`, `[x,y,z]`, `<dx,dy,dz>`, `24s` (segments), `x5` / `/5` (arrays after a copy).
-All shortcuts can be reassigned in Window › Preferences.
+All shortcuts can be reassigned in File › Options. Ctrl+F1 collapses the ribbon; Rectangle + Ctrl draws from the centre.
 
 ## Features
 
@@ -39,13 +39,15 @@ Organizing: groups, components (shared definitions, make unique, glue, cut openi
 Construction: tape measure (guides, resize model), protractor, dimensions (linear, radial), leader and screen text, axes tool, section planes with cut fill.
 Terrain: from contours, from scratch, smoove, drape, add detail, flip edge.
 Display: wireframe, hidden line, shaded, textured, monochrome, X-ray, back edges, profiles, extensions, color by axis/tag, sky and ground, fog, sun shadows by date/time/location.
-Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF; export OBJ, STL (watertight check, outward-oriented shells), DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
+Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF and pictures (placed as images or used as textures; dropping a picture on the window places it); export OBJ, STL (watertight check, outward-oriented shells), DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
 
 `.skp` files cannot be opened (the format is proprietary); export them from SketchUp as COLLADA (.dae) and import that.
 
 ## Build from source
 
 ```
-sudo apt install qt6-base-dev libqt6opengl6-dev libgl1-mesa-dev libglu1-mesa-dev cmake ninja-build g++ dpkg-dev fakeroot
+sudo apt install qt6-base-dev libqt6opengl6-dev libqt6svg6-dev libgl1-mesa-dev libglu1-mesa-dev cmake ninja-build g++ dpkg-dev fakeroot
 ./packaging/build-deb.sh          # builds, runs the geometry tests, writes gable_<ver>_amd64.deb
 ```
+
+`folio-gable --audit` drives the whole program with synthesized mouse and keyboard input (every tool, command, context-menu entry, ribbon button and File page) and validates the model after each step. `tools/make_icons.py` regenerates the ribbon icons.

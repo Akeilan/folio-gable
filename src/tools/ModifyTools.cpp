@@ -1,3 +1,5 @@
+#include <set>
+#include <map>
 #include "core/Geometry.h"
 #include "tools/Tools.h"
 #include "view/Viewport.h"
@@ -50,7 +52,9 @@ void PushPullTool::mousePress(const MouseEv& e) {
     I.lockDir = normalW_;
     I.lockColor = icolor::magenta();
     I.lockAxis = 3;
+    // the face's own vertices would only ever snap the distance back to zero
     I.excludeVerts.clear();
+    for (int v : doc()->active().faceVerts(f)) I.excludeVerts.push_back(v);
     pressX_ = e.x;
     pressY_ = e.y;
     dist_ = 0;
@@ -1084,6 +1088,11 @@ void FollowMeTool::mousePress(const MouseEv& e) {
     if (e.button != Qt::LeftButton) return;
     PickHit h;
     EntRef r = view->picker.pickActive(e.x, e.y, &h);
+    if (r.kind != EntKind::Face) {
+        // a small profile: the face under the cursor wins over a nearby edge
+        Picker::DeepResult dr = view->picker.deep(e.x, e.y, 0, 0);
+        if (dr.face.valid() && dr.face.path == doc()->editPath) r = {EntKind::Face, dr.face.id};
+    }
     Entities& E = doc()->active();
     if (face_ >= 0 && e.alt() && r.kind == EntKind::Face && r.id != face_) {
         // Alt: use the clicked face's perimeter as a closed path
@@ -1097,6 +1106,31 @@ void FollowMeTool::mousePress(const MouseEv& e) {
     }
     if (r.kind != EntKind::Face) return;
     auto sel = doc()->selectedEdges();
+    {
+        // a usable path is one unbranched chain of edges that is not part of the profile
+        std::map<int, int> deg;
+        auto prof = E.faceEdges(r.id);
+        std::set<int> profSet(prof.begin(), prof.end());
+        bool ok = !sel.empty();
+        for (int e : sel) {
+            if (profSet.count(e)) { ok = false; break; }
+            if (++deg[E.edges[e].v[0]] > 2 || ++deg[E.edges[e].v[1]] > 2) { ok = false; break; }
+        }
+        if (ok) {
+            std::set<int> seen;
+            std::vector<int> stack{sel[0]};
+            std::set<int> selSet(sel.begin(), sel.end());
+            while (!stack.empty()) {
+                int e = stack.back(); stack.pop_back();
+                if (!seen.insert(e).second) continue;
+                for (int k = 0; k < 2; ++k)
+                    for (int x : E.verts[E.edges[e].v[k]].edges)
+                        if (selSet.count(x) && !seen.count(x)) stack.push_back(x);
+            }
+            ok = seen.size() == sel.size();
+        }
+        if (!ok) sel.clear();
+    }
     if (!sel.empty()) {
         bool closed;
         auto chain = chainEdges(E, sel, closed);
@@ -1111,6 +1145,12 @@ void FollowMeTool::mousePress(const MouseEv& e) {
             double bd = 1e300;
             for (size_t i = 0; i < pts.size(); ++i) { double d = (pts[i] - c).length(); if (d < bd) { bd = d; best = i; } }
             std::rotate(pts.begin(), pts.begin() + best, pts.end());
+            // run the loop in the direction that leaves the profile, not along it
+            if (pts.size() > 2) {
+                Vec3 n = E.faces[r.id].plane.n;
+                Vec3 fwd = (pts[1] - pts[0]).normalized(), back = (pts.back() - pts[0]).normalized();
+                if (std::fabs(back.dot(n)) > std::fabs(fwd.dot(n)) + 1e-9) std::reverse(pts.begin() + 1, pts.end());
+            }
         }
         doc()->begin("Follow Me");
         bool ok = geom::followMe(E, r.id, pts, closed);
