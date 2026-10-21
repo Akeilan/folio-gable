@@ -1898,3 +1898,67 @@ double volume(const Entities& E) {
 
 }  // namespace geom
 }  // namespace gable
+
+namespace gable { namespace geom {
+std::vector<std::string> validate(const Entities& E, int maxReports) {
+    std::vector<std::string> out;
+    auto rep = [&](const std::string& m) { if ((int)out.size() < maxReports) out.push_back(m); };
+    const int nv = (int)E.verts.size(), ne = (int)E.edges.size(), nf = (int)E.faces.size();
+    std::map<std::pair<int, int>, int> seen;
+    for (int e = 0; e < ne; ++e) {
+        const Edge& Ed = E.edges[e];
+        if (!Ed.alive) continue;
+        if (Ed.v[0] < 0 || Ed.v[1] < 0 || Ed.v[0] >= nv || Ed.v[1] >= nv) { rep("edge " + std::to_string(e) + " bad vertex index"); continue; }
+        if (!E.verts[Ed.v[0]].alive || !E.verts[Ed.v[1]].alive) rep("edge " + std::to_string(e) + " uses dead vertex");
+        if (Ed.v[0] == Ed.v[1] || E.edgeLength(e) < kTol * 0.5) rep("edge " + std::to_string(e) + " zero length");
+        auto key = std::make_pair(std::min(Ed.v[0], Ed.v[1]), std::max(Ed.v[0], Ed.v[1]));
+        auto it = seen.find(key);
+        if (it != seen.end()) rep("edges " + std::to_string(it->second) + "," + std::to_string(e) + " duplicate");
+        else seen[key] = e;
+        for (int k = 0; k < 2; ++k) {
+            auto& ve = E.verts[Ed.v[k]].edges;
+            if (std::find(ve.begin(), ve.end(), e) == ve.end()) rep("vertex " + std::to_string(Ed.v[k]) + " missing back-link to edge " + std::to_string(e));
+        }
+        for (int f : Ed.faces) {
+            if (f < 0 || f >= nf || !E.faces[f].alive) { rep("edge " + std::to_string(e) + " links dead face " + std::to_string(f)); continue; }
+            auto fe = E.faceEdges(f);
+            if (std::find(fe.begin(), fe.end(), e) == fe.end()) rep("edge " + std::to_string(e) + " links face " + std::to_string(f) + " not using it");
+        }
+        if (Ed.faces.size() > 2) {
+            // allowed (non-manifold) but worth knowing only if extreme
+            if (Ed.faces.size() > 8) rep("edge " + std::to_string(e) + " has " + std::to_string(Ed.faces.size()) + " faces");
+        }
+    }
+    for (int v = 0; v < nv; ++v) {
+        const Vertex& V = E.verts[v];
+        if (!V.alive) continue;
+        for (int e : V.edges) {
+            if (e < 0 || e >= ne || !E.edges[e].alive) { rep("vertex " + std::to_string(v) + " links dead edge " + std::to_string(e)); continue; }
+            if (E.edges[e].v[0] != v && E.edges[e].v[1] != v) rep("vertex " + std::to_string(v) + " links foreign edge " + std::to_string(e));
+        }
+    }
+    for (int f = 0; f < nf; ++f) {
+        const Face& F = E.faces[f];
+        if (!F.alive) continue;
+        std::vector<const std::vector<int>*> loops{&F.outer};
+        for (auto& h : F.holes) loops.push_back(&h);
+        for (auto* L : loops) {
+            if (L->size() < 3) { rep("face " + std::to_string(f) + " loop < 3 verts"); continue; }
+            for (size_t i = 0; i < L->size(); ++i) {
+                int a = (*L)[i], b = (*L)[(i + 1) % L->size()];
+                if (a < 0 || a >= nv || !E.verts[a].alive) { rep("face " + std::to_string(f) + " dead vertex"); break; }
+                int e = E.findEdge(a, b);
+                if (e < 0) { rep("face " + std::to_string(f) + " loop gap " + std::to_string(a) + "-" + std::to_string(b)); break; }
+                auto& ef = E.edges[e].faces;
+                if (std::find(ef.begin(), ef.end(), f) == ef.end()) rep("face " + std::to_string(f) + " not linked from edge " + std::to_string(e));
+                double d = std::fabs(F.plane.dist(E.verts[a].p));
+                if (d > std::max(0.05, kPlaneTol * 5)) rep("face " + std::to_string(f) + " vertex off plane by " + std::to_string(d));
+            }
+        }
+        Vec3 n = newellNormal(E, F.outer);
+        if (n.dot(F.plane.n) < 0.98) rep("face " + std::to_string(f) + " winding disagrees with plane normal");
+        if (E.faceArea(f) < 1e-6) rep("face " + std::to_string(f) + " zero area");
+    }
+    return out;
+}
+} }

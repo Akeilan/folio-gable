@@ -1,6 +1,7 @@
 // Folio Gable — a native 3D modeler for Linux.
 #include "ui/Icons.h"
 #include "ui/MainWindow.h"
+#include "ui/Theme.h"
 #include <QApplication>
 #include <QFileInfo>
 #include <QFile>
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
             QFile::rename(oldAuto, newDir + "/autosave.gbl");
         }
     }
+    gable::theme::install(app);
     QApplication::setWindowIcon(QIcon(gable::appIconPixmap(256)));
     gable::MainWindow w;
     w.show();

@@ -1,14 +1,29 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7c4dbd"/>
-      <stop offset="1" stop-color="#4b2585"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8457c4"/>
+      <stop offset="1" stop-color="#3c1f6b"/>
+    </linearGradient>
+    <linearGradient id="gable" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#efe8f8"/>
+    </linearGradient>
+    <linearGradient id="roof" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f6f1fc"/>
+      <stop offset="1" stop-color="#ddcff2"/>
     </linearGradient>
   </defs>
-  <rect x="2" y="2" width="60" height="60" rx="13" fill="url(#g)"/>
-  <g stroke="#1e122c" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
-    <polygon points="12.3,42.9 34.8,55.9 34.8,39.7 12.3,26.7" fill="#eeeaf3"/>
-    <polygon points="34.8,55.9 51.7,46.2 51.7,29.9 43.3,23.1 34.8,39.7" fill="#c2bad2"/>
-    <polygon points="12.3,26.7 34.8,39.7 43.3,23.1 20.7,10.1" fill="#fcfbfe"/>
-  </g>
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="url(#bg)"/>
+  <!-- long wall -->
+  <path d="M124 214 L200 172 L200 110 L124 152 Z" fill="#c7b2e8"/>
+  <!-- roof -->
+  <path d="M124 152 L92 78 L168 36 L200 110 Z" fill="url(#roof)"/>
+  <!-- gable end -->
+  <path d="M58 178 L124 214 L124 152 L92 78 L58 116 Z" fill="url(#gable)"/>
+  <!-- door and window -->
+  <path d="M84 191 L98 199 L98 167 L84 159 Z" fill="#4f2a85"/>
+  <path d="M148 168 L176 152 L176 132 L148 148 Z" fill="#8f6ccc"/>
+  <!-- soft edges -->
+  <path d="M124 214 L124 152 L92 78" fill="none" stroke="#4f2a85" stroke-opacity="0.28" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M124 152 L200 110" fill="none" stroke="#4f2a85" stroke-opacity="0.22" stroke-width="2"/>
 </svg>
