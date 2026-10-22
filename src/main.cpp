@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("Folio Gable");
     QApplication::setOrganizationName("Folio");
-    QApplication::setApplicationVersion("2.0.0");
+    QApplication::setApplicationVersion("2.1.0");
     QApplication::setDesktopFileName("folio-gable");
     // Carry settings and the crash-recovery file over from the pre-suite "Gable" name.
     {

@@ -611,6 +611,7 @@ void OrbitTool::mouseRelease(const MouseEv&) {
 void OrbitTool::mouseMove(const MouseEv& e) {
     if (!down_) return;
     if (e.shift()) view->cam.pan(e.x - lx_, e.y - ly_, pivot_);
+    else if (e.ctrl()) view->cam.orbitFree(e.x - lx_, e.y - ly_, pivot_);
     else view->cam.orbit(e.x - lx_, e.y - ly_, pivot_);
     lx_ = e.x; ly_ = e.y;
 }

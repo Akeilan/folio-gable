@@ -109,6 +109,20 @@ void Camera::orbit(double dx, double dy, const Vec3& pivot) {
     s->up = Z;
 }
 
+void Camera::orbitFree(double dx, double dy, const Vec3& pivot) {
+    // Ctrl: no gravity — turn about the camera's own up and right axes, so the view can roll
+    // over the top and look up from below
+    const double k = 0.0065;
+    Vec3 u = upv(), r = right();
+    Mat4 m = Mat4::rotationAbout(pivot, u, -dx * k) ;
+    Mat4 m2 = Mat4::rotationAbout(pivot, r, -dy * k);
+    Mat4 t = m2 * m;
+    Vec3 up1 = (t.vector(u)).normalized();
+    s->eye = t.point(s->eye);
+    s->target = t.point(s->target);
+    s->up = up1;
+}
+
 void Camera::pan(double dx, double dy, const Vec3& pivot) {
     double px = pixelSize(pivot);
     Vec3 off = right() * (-dx * px) + upv() * (dy * px);

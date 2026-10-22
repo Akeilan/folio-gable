@@ -488,6 +488,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* e) {
     lastY_ = y;
     if (nav_ == Nav::Orbit) {
         if (e->modifiers() & Qt::ShiftModifier) cam.pan(dx, dy, navPivot_);
+        else if (e->modifiers() & Qt::ControlModifier) cam.orbitFree(dx, dy, navPivot_);
         else cam.orbit(dx, dy, navPivot_);
         update();
         return;

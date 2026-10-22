@@ -531,7 +531,7 @@ public:
     void mousePress(const MouseEv& e) override;
     void mouseMove(const MouseEv& e) override;
     void mouseRelease(const MouseEv&) override;
-    QString status() const override { return "Drag to orbit about the point under the cursor. Shift = pan."; }
+    QString status() const override { return "Drag to orbit about the point under the cursor. Shift = pan, Ctrl = orbit without gravity."; }
     QCursor cursor() const override { return Qt::OpenHandCursor; }
 private:
     bool down_ = false;
