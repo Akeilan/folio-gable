@@ -148,6 +148,7 @@ void TitleBar::setQat(const std::vector<std::pair<QAction*, QString>>& actions) 
 
 void TitleBar::setWindowButtonsVisible(bool on) {
     for (auto* b : {min_, max_, close_}) b->setVisible(on);
+    title_->setVisible(on);   // with the system title bar the name is shown there already
 }
 
 void TitleBar::syncMaximized() {

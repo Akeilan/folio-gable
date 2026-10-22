@@ -17,6 +17,12 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QDialog>
+#include <QDateTime>
+#include <QToolButton>
+#include <QScrollBar>
+#include <QAbstractSlider>
+#include <QAbstractSpinBox>
+#include <QComboBox>
 #include <QDir>
 #include <QImage>
 #include <QElapsedTimer>
@@ -224,9 +230,13 @@ private:
                 return;
             }
             if (auto* dlg = qobject_cast<QDialog*>(mw)) {
-                if (dlg->property("auditSeen").toBool()) { dlg->reject(); return; }
-                dlg->setProperty("auditSeen", true);
-                QTimer::singleShot(30, dlg, [dlg] { dlg->accept(); });
+                // accept a dialog once; one that stays open (it refused) is rejected after a while
+                qint64 now = QDateTime::currentMSecsSinceEpoch();
+                QVariant seen = dlg->property("auditSeen");
+                if (!seen.isValid()) {
+                    dlg->setProperty("auditSeen", now);
+                    QTimer::singleShot(30, dlg, [dlg] { dlg->accept(); });
+                } else if (now - seen.toLongLong() > 1500) dlg->reject();
             }
         });
         t.start(40);
@@ -775,6 +785,112 @@ private:
         validate("new features");
     }
 
+    // every button, check box, combo box, spin box and slider in every tray panel
+    void sPanels() {
+        const char* states[] = {"a box", "a selected face", "a selected group"};
+        for (int st = 0; st < 3; ++st) {
+            for (auto* sec : w->tray_->findChildren<CollapsibleSection*>()) {
+                begin(QString("panel %1 with %2").arg(sec->title(), states[st]));
+                for (int pass_ = 0; pass_ < 2; ++pass_) {   // buttons, then value widgets
+                    int count = 0;
+                    for (int i = 0; i < 400; ++i) {
+                        prepareState(st == 2 ? 2 : 0);
+                        if (st == 1) d->setSelection({{EntKind::Face, faceAt(Vec3(500, 500, 1000))}});
+                        if (st == 2) d->setSelection({{EntKind::Instance, 0}});
+                        if (d->model.materials.empty()) {
+                            Material m; m.name = "Audit"; m.color = QColor(30, 120, 200);
+                            d->model.materials.push_back(m);
+                        }
+                        if (d->model.scenes.empty()) { act("addscene"); }
+                        w->tray_->showPanel(sec->title());
+                        sec->setExpanded(true);
+                        settle(20);
+                        std::vector<QWidget*> ws;
+                        for (auto* x : sec->findChildren<QWidget*>()) {
+                            if (!x->isVisible() || !x->isEnabled()) continue;
+                            if (x->property("paneHeader").toBool()) continue;
+                            bool isBtn = qobject_cast<QAbstractButton*>(x) != nullptr;
+                            bool isVal = qobject_cast<QComboBox*>(x) || qobject_cast<QAbstractSpinBox*>(x) || qobject_cast<QAbstractSlider*>(x);
+                            if (qobject_cast<QAbstractSlider*>(x) && qobject_cast<QScrollBar*>(x)) continue;
+                            if ((pass_ == 0 && isBtn) || (pass_ == 1 && isVal)) ws.push_back(x);
+                        }
+                        count = (int)ws.size();
+                        if (i >= count) break;
+                        QWidget* x = ws[i];
+                        QString what = x->metaObject()->className() + QString(" ") +
+                                       (qobject_cast<QAbstractButton*>(x) ? qobject_cast<QAbstractButton*>(x)->text() : QString());
+                        if (auto* b = qobject_cast<QAbstractButton*>(x)) {
+                            if (auto* tb = qobject_cast<QToolButton*>(b); tb && tb->menu()) { popupIndex = 0; tb->showMenu(); settle(60); popupIndex = -1; }
+                            else b->click();
+                        } else if (auto* c = qobject_cast<QComboBox*>(x)) {
+                            if (c->count() > 1) c->setCurrentIndex((c->currentIndex() + 1) % c->count());
+                        } else if (auto* sp = qobject_cast<QAbstractSpinBox*>(x)) {
+                            sp->stepUp();
+                            emit sp->editingFinished();
+                        } else if (auto* sl = qobject_cast<QAbstractSlider*>(x)) {
+                            sl->setValue((sl->minimum() + sl->maximum()) / 2 + 1);
+                        }
+                        settle(30);
+                        key(Qt::Key_Escape);
+                        validate(sec->title() + ": " + what);
+                    }
+                }
+            }
+        }
+    }
+
+    void sGroupEdit() {
+        begin("drawing inside a group, components share edits");
+        reset();
+        box(2000, 1500, 1000);
+        act("selectall");
+        act("makecomponent");
+        settle(100);
+        check(insts() == 1, "component made");
+        // a second copy of the component
+        d->setSelection({{EntKind::Instance, 0}});
+        tool("move");
+        click(Vec3(2000, 0, 0));
+        key(Qt::Key_Control);
+        move(Vec3(3000, 0, 0));
+        type("3000");
+        check(insts() == 2, "component copied");
+        // edit the first copy: split its top face with a line
+        tool("select");
+        dbl(Vec3(1000, 750, 1000));
+        settle(50);
+        check(d->inContext(), "double-click opens the component");
+        tool("line");
+        click(Vec3(1000, 0, 1000));
+        click(Vec3(1000, 1500, 1000));
+        key(Qt::Key_Escape);
+        int def = E().faces.empty() ? -1 : d->activeDef();
+        check(faces() == 7, QString("line inside the component splits its face (faces %1)").arg(faces()));
+        tool("select");
+        clickPx(QPointF(8, 8));   // click outside closes the component
+        settle(50);
+        if (d->inContext()) act("closegroup");
+        check(!d->inContext(), "back in the model");
+        int defFaces = def >= 0 ? d->model.defs[def].ents.aliveCount(EntKind::Face) : -1;
+        check(defFaces == 7, QString("both copies share the edit (definition faces %1)").arg(defFaces));
+        validate("group edit");
+        // push/pull a face on a vertical wall inside a group
+        reset();
+        box(2000, 1500, 1000);
+        act("selectall");
+        act("makegroup");
+        d->openInstance(0);
+        settle();
+        tool("pushpull");
+        move(Vec3(1000, 0, 500));
+        click(Vec3(1000, 0, 500));
+        move(Vec3(1000, -400, 500));
+        type("500");
+        check(near(vol(), 3e9 + 2000.0 * 1000 * 500, 1e4), QString("push/pull inside a group (vol %1)").arg(vol()));
+        act("closegroup");
+        validate("group pushpull");
+    }
+
     // ---------------------------------------------------------------- click everything
     void quickBox(double a) {
         Entities& EE = E();
@@ -927,7 +1043,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -952,10 +1068,12 @@ int Auditor::run() {
     sFiles();
     sChrome();
     sNewFeatures();
+    sGroupEdit();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
         sRibbonButtons();
+        sPanels();
     }
     say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
     d->modified = false;
