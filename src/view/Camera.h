@@ -25,6 +25,7 @@ public:
     double pixelSize(const Vec3& p) const;
 
     void orbit(double dxPix, double dyPix, const Vec3& pivot);
+    void orbitFree(double dxPix, double dyPix, const Vec3& pivot);   // Ctrl: without gravity
     void pan(double dxPix, double dyPix, const Vec3& pivot);
     void zoomAt(double factor, double x, double y, const Vec3& pivotHint, bool havePivot);
     void dolly(double amount);

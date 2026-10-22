@@ -6,7 +6,7 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.0.0_amd64.deb
+sudo apt install ./folio-gable_2.1.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
@@ -33,7 +33,7 @@ Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from t
 | O / H / Z | Orbit / Pan / Zoom | Shift+Z | Zoom Extents |
 | K | Back Edges | Ctrl+G | Make Group |
 
-Middle-drag orbits, Shift+middle-drag pans, the wheel zooms at the cursor, middle double-click recenters.
+Middle-drag orbits about the point under the cursor (over empty space: about the selection, else whatever is in the middle of the view), Ctrl+middle-drag orbits without gravity, Shift+middle-drag pans, the wheel zooms at the cursor, middle double-click recenters.
 Hold Shift to lock an inference; → ← ↑ lock red/green/blue, ↓ locks parallel/perpendicular to the last edge.
 Type any value while a tool is active — it goes to the Measurements box: `2500`, `4000,3000`, `5m`, `6'4"`, `[x,y,z]`, `<dx,dy,dz>`, `24s` (segments), `x5` / `/5` (arrays after a copy).
 All shortcuts can be reassigned in File › Options. Ctrl+F1 collapses the ribbon; Rectangle + Ctrl draws from the centre.
