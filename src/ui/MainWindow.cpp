@@ -1450,6 +1450,48 @@ void MainWindow::contextMenu(const QPoint& at) {
             doc_->active().touch();
             doc_->commit();
         });
+        m.addAction("Create Group from Slice", [this, i] {
+            // edges where the section plane cuts the model (including inside groups), as a new group
+            Entities& A = doc_->active();
+            Plane pl = A.sections[i].plane;
+            BBox bb = doc_->model.entitiesBBox(A);
+            double R = std::max(bb.valid() ? bb.radius() * 4 : 0.0, 10000.0);
+            Vec3 c = pl.project(bb.valid() ? bb.center() : Vec3());
+            Vec3 u = std::fabs(pl.n.z) < 0.9 ? Vec3(0, 0, 1).cross(pl.n).normalized() : Vec3(1, 0, 0).cross(pl.n).normalized();
+            Vec3 v = pl.n.cross(u).normalized();
+            Entities cutter;
+            geom::addPolyline(cutter, {c - u * R - v * R, c + u * R - v * R, c + u * R + v * R, c - u * R + v * R}, true);
+            int cf = -1;
+            for (int f = 0; f < (int)cutter.faces.size(); ++f) if (cutter.faces[f].alive) cf = f;
+            std::vector<std::pair<Vec3, Vec3>> segs;
+            std::function<void(const Entities&, const Mat4&, int)> walk = [&](const Entities& E, const Mat4& xf, int depth) {
+                if (depth > 16) return;
+                Entities W;   // the faces of E in this context's coordinates
+                std::vector<EntRef> all;
+                for (int f = 0; f < (int)E.faces.size(); ++f) if (E.faces[f].alive) all.push_back({EntKind::Face, f});
+                for (int e = 0; e < (int)E.edges.size(); ++e) if (E.edges[e].alive && !E.edges[e].faces.empty()) all.push_back({EntKind::Edge, e});
+                geom::copyEntities(E, all, W, xf, false);
+                for (int f = 0; f < (int)W.faces.size(); ++f) {
+                    if (!W.faces[f].alive) continue;
+                    auto s = geom::faceFaceSegments(cutter, cf, W, f);
+                    segs.insert(segs.end(), s.begin(), s.end());
+                }
+                for (auto& in : E.insts)
+                    if (in.alive && in.def >= 0) walk(doc_->model.defs[in.def].ents, xf * in.xf, depth + 1);
+            };
+            if (cf >= 0) walk(A, Mat4(), 0);
+            if (segs.empty()) { statusBar()->showMessage("The section plane does not cut anything here.", 4000); return; }
+            doc_->begin("Create Group from Slice");
+            int def = doc_->model.addDef("Slice", true);
+            Entities& G = doc_->model.defs[def].ents;
+            for (auto& sg : segs) geom::insertSegment(G, sg.first, sg.second);
+            Instance in;
+            in.def = def;
+            A.insts.push_back(in);
+            A.touch();
+            doc_->commit();
+            doc_->setSelection({{EntKind::Instance, (int)A.insts.size() - 1}});
+        });
         m.addAction("Reverse", [this, i] {
             doc_->begin("Reverse Section");
             Plane& p = doc_->active().sections[i].plane;

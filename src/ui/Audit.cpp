@@ -17,6 +17,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QDialog>
+#include <QPointer>
 #include <QDateTime>
 #include <QToolButton>
 #include <QScrollBar>
@@ -24,6 +25,7 @@
 #include <QAbstractSpinBox>
 #include <QComboBox>
 #include <QDir>
+#include <QStatusBar>
 #include <QImage>
 #include <QElapsedTimer>
 #include <QFileDialog>
@@ -54,6 +56,7 @@ private:
     QString scenario;
     QPointF last;
     int popupIndex = -1, popupCount = 0;
+    QString popupName;   // pick the popup entry with this text (overrides popupIndex)
     QStringList popupSeen;
 
     // ---------------------------------------------------------------- plumbing
@@ -202,6 +205,8 @@ private:
             if (QWidget* p = QApplication::activePopupWidget()) {
                 auto* m = qobject_cast<QMenu*>(p);
                 if (!m) { p->close(); return; }
+                if (m->property("auditHandled").toBool()) return;
+                m->setProperty("auditHandled", true);
                 std::vector<QAction*> acts;
                 std::function<void(QMenu*)> walk = [&](QMenu* mm) {
                     for (QAction* a : mm->actions()) {
@@ -213,9 +218,20 @@ private:
                 walk(m);
                 popupCount = (int)acts.size();
                 QAction* pick = (popupIndex >= 0 && popupIndex < popupCount) ? acts[popupIndex] : nullptr;
+                if (!popupName.isEmpty()) {
+                    pick = nullptr;
+                    for (QAction* a : acts) if (a->text() == popupName) pick = a;
+                }
                 if (pick) popupSeen << pick->text();
-                m->close();
-                if (pick) QTimer::singleShot(0, pick, [pick] { pick->trigger(); });
+                // Run the entry from a fresh event (not inside this timer's slot, so dialogs it opens
+                // can be handled) while the menu, which may own the action, still exists.
+                QPointer<QMenu> mp(m);
+                QPointer<QAction> ap(pick);
+                QTimer::singleShot(0, w, [mp, ap] {
+                    if (mp) mp->hide();
+                    if (ap) ap->trigger();
+                    if (mp) mp->close();
+                });
                 return;
             }
             QWidget* mw = QApplication::activeModalWidget();
@@ -839,6 +855,33 @@ private:
         }
     }
 
+    void sSlice() {
+        begin("section plane: create group from slice");
+        reset();
+        box(2000, 1500, 1000);
+        tool("section");
+        click(Vec3(1000, 0, 500));      // on the front face: a vertical plane through y = 0
+        settle(50);
+        int sec = -1;
+        for (int i = 0; i < (int)E().sections.size(); ++i) if (E().sections[i].alive) sec = i;
+        check(sec >= 0, "section placed");
+        if (sec < 0) return;
+        // move it into the middle of the box
+        E().sections[sec].plane = Plane(E().sections[sec].plane.n, Vec3(1000, 750, 500));
+        d->setSelection({{EntKind::Section, sec}});
+        popupName = "Create Group from Slice";
+        w->contextMenu(v->mapToGlobal(QPoint(300, 300)));
+        settle(100);
+        popupName.clear();
+        check(insts() == 1, QString("slice group made (insts %1, menu items seen: %2, status: %3)").arg(insts())
+                                .arg(popupSeen.join("|")).arg(w->statusBar()->currentMessage()));
+        if (insts() == 1) {
+            const Entities& G = d->model.defs[E().insts.back().def].ents;
+            check(G.aliveCount(EntKind::Edge) == 4, QString("slice is a rectangle (edges %1)").arg(G.aliveCount(EntKind::Edge)));
+        }
+        validate("slice");
+    }
+
     void sGroupEdit() {
         begin("drawing inside a group, components share edits");
         reset();
@@ -907,6 +950,20 @@ private:
         if (s == 2) { act("selectall"); act("makegroup"); d->setSelection({{EntKind::Instance, 0}}); }
         if (s == 3) { act("selectall"); act("makegroup"); d->openInstance(0); d->selectAll(); }
         if (s == 4) { act("selectall"); }
+        if (s == 5) {
+            SectionPlane sp;
+            sp.plane = Plane(Vec3(0, -1, 0), Vec3(500, 500, 500));
+            E().sections.push_back(sp);
+            E().touch();
+            d->setSelection({{EntKind::Section, (int)E().sections.size() - 1}});
+        }
+        if (s == 6) {
+            geom::addPolyline(E(), {{1500, 0, 0}, {1800, 0, 0}, {1800, 300, 0}}, false);
+            std::vector<EntRef> es;
+            for (int i = 0; i < (int)E().edges.size(); ++i)
+                if (E().edges[i].alive && E().edges[i].faces.empty()) es.push_back({EntKind::Edge, i});
+            d->setSelection(es);
+        }
         settle();
     }
 
@@ -939,7 +996,7 @@ private:
     }
 
     void sContextMenus() {
-        for (int s = 0; s < 5; ++s) {
+        for (int s = 0; s < 7; ++s) {
             begin(QString("context menu, state %1").arg(s));
             for (int i = 0; i < 60; ++i) {
                 prepareState(s);
@@ -1043,7 +1100,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1069,6 +1126,7 @@ int Auditor::run() {
     sChrome();
     sNewFeatures();
     sGroupEdit();
+    sSlice();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
