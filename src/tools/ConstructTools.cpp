@@ -602,6 +602,11 @@ void OrbitTool::mousePress(const MouseEv& e) {
     lx_ = e.x; ly_ = e.y;
     pivot_ = view->orbitPivot(e.x, e.y);
     view->pushViewHistory();
+    view->beginOrbit(pivot_);
+}
+void OrbitTool::mouseRelease(const MouseEv&) {
+    down_ = false;
+    view->endOrbit();
 }
 void OrbitTool::mouseMove(const MouseEv& e) {
     if (!down_) return;

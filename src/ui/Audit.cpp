@@ -17,6 +17,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QDialog>
+#include <QLineF>
 #include <QPointer>
 #include <QDateTime>
 #include <QToolButton>
@@ -855,6 +856,69 @@ private:
         }
     }
 
+    void sOrbit() {
+        begin("orbit: about the point under the cursor, and in empty space");
+        reset();
+        box(2000, 1500, 1000);
+        auto distTo = [&](const Vec3& p) { return (d->model.camera.eye - p).length(); };
+        // on the model: the clicked point stays put on screen and keeps its distance
+        Vec3 hit(1500, 0, 600);   // on the front face
+        QPointF s0 = scr(hit);
+        double d0 = distTo(hit);
+        tool("orbit");
+        dragPx(s0, s0 + QPointF(90, 40));
+        QPointF s1 = scr(hit);
+        check(QLineF(s0, s1).length() < 1.5, QString("orbit keeps the grabbed point under the cursor (moved %1 px)").arg(QLineF(s0, s1).length()));
+        check(near(distTo(hit), d0, d0 * 1e-6), "orbit keeps the distance to the grabbed point");
+        // empty space: the model's middle must not swing across the screen
+        reset();
+        box(2000, 1500, 1000);
+        Vec3 mid(1000, 750, 500);
+        QPointF m0 = scr(mid);
+        tool("orbit");
+        dragPx(QPointF(30, 30), QPointF(60, 30));   // a small turn from an empty corner
+        QPointF m1 = scr(mid);
+        double sweep = QLineF(m0, m1).length();
+        say(QString("   empty-space sweep %1 px").arg(sweep));
+        check(sweep < 120, QString("empty-space orbit turns about the view, not a far point (model moved %1 px)").arg(sweep));
+        // close up on one corner of a big model: orbiting from empty space must not swing the
+        // view around the far-away middle of the model
+        reset();
+        box(20000, 15000, 3000);
+        d->model.camera.eye = Vec3(24000, -4000, 6000);
+        d->model.camera.target = Vec3(20000, 0, 3000);
+        settle();
+        tool("orbit");
+        Vec3 corner(20000, 0, 3000);
+        QPointF c0 = scr(corner);
+        QPointF from(-1, -1);
+        for (int yy = 20; yy < v->height() - 20 && from.x() < 0; yy += 20)
+            for (int xx = 20; xx < v->width() - 60 && from.x() < 0; xx += 20) {
+                Picker::DeepResult pr = v->picker.deep(xx, yy, 0, 6);
+                if (!pr.face.valid() && !pr.edge.valid()) from = QPointF(xx, yy);
+            }
+        check(from.x() >= 0, "found empty space to start the drag");
+        dragPx(from, from + QPointF(40, 0));
+        QPointF c1 = scr(corner);
+        double jump = QLineF(c0, c1).length();
+        say(QString("   close-up sweep %1 px").arg(jump));
+        check(jump < 150, QString("close-up empty-space orbit stays put (corner moved %1 px)").arg(jump));
+        // top view, then orbit both ways: no flips, nothing becomes NaN
+        act("view_top");
+        settle(600);
+        v->stopAnimation();
+        tool("orbit");
+        for (int i = 0; i < 6; ++i) dragPx(QPointF(400, 300), QPointF(400 + (i % 2 ? -50 : 50), 300 + (i < 3 ? 40 : -40)));
+        CameraState& c = d->model.camera;
+        check(std::isfinite(c.eye.x) && std::isfinite(c.target.z) && (c.target - c.eye).length() > 1, "orbit near the top view stays finite");
+        // pitch never passes straight up/down
+        for (int i = 0; i < 20; ++i) dragPx(QPointF(400, 100), QPointF(400, 600));
+        Vec3 fw = (c.target - c.eye).normalized();
+        check(std::fabs(fw.z) < 1.0 - 1e-9 && std::isfinite(fw.z), QString("pitch is clamped short of the pole (fz %1)").arg(fw.z, 0, 'g', 12));
+        tool("select");
+        validate("orbit");
+    }
+
     void sSlice() {
         begin("section plane: create group from slice");
         reset();
@@ -1100,7 +1164,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1127,6 +1191,7 @@ int Auditor::run() {
     sNewFeatures();
     sGroupEdit();
     sSlice();
+    sOrbit();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
