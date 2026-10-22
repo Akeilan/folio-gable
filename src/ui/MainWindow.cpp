@@ -40,6 +40,8 @@
 #include <QPainterPath>
 #include <QPrintDialog>
 #include <QPrinter>
+#include <QPdfWriter>
+#include <QPageSize>
 #include <QSettings>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -570,6 +572,12 @@ bool MainWindow::eventFilter(QObject* o, QEvent* e) {
             view_->setFocus();
             return true;
         }
+        // Esc leaves full-screen mode once no tool is using it
+        if (k->key() == Qt::Key_Escape && ribbon_ && ribbon_->mode() == Ribbon::FullScreen &&
+            !(view_->tool() && view_->tool()->busy())) {
+            ribbon_->setMode(Ribbon::AlwaysShow);
+            return true;
+        }
     }
     if (o == vcb_ && e->type() == QEvent::KeyPress) {
         auto* k = static_cast<QKeyEvent*>(e);
@@ -904,19 +912,41 @@ void MainWindow::exportImage() {
     QSettings s;
     QString imgSel;
     QString fn = QFileDialog::getSaveFileName(this, "Export Image", s.value("lastDir", QDir::homePath()).toString() + "/view.png",
-                                              "PNG (*.png);;JPEG (*.jpg *.jpeg)", &imgSel);
+                                              "PNG (*.png);;JPEG (*.jpg *.jpeg);;PDF (*.pdf)", &imgSel);
     if (fn.isEmpty()) return;
     {
         QString sx = QFileInfo(fn).suffix().toLower();
-        bool wantJpg = imgSel.startsWith("JPEG");
-        if (sx != "png" && sx != "jpg" && sx != "jpeg") fn += wantJpg ? ".jpg" : ".png";
-        else if (wantJpg && sx == "png") fn = fn.left(fn.size() - 3) + "jpg";
+        QString want = imgSel.startsWith("JPEG") ? "jpg" : (imgSel.startsWith("PDF") ? "pdf" : "png");
+        if (sx != "png" && sx != "jpg" && sx != "jpeg" && sx != "pdf") fn += "." + want;
+        else if (sx != want && !(want == "jpg" && sx == "jpeg")) fn = fn.left(fn.size() - sx.size()) + want;
     }
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     QApplication::setOverrideCursor(Qt::WaitCursor);
     QImage img = view_->renderImage(w->value(), h->value(), transp->isChecked());
     QApplication::restoreOverrideCursor();
-    if (!img.save(fn)) QMessageBox::warning(this, "Export", "Could not write " + fn);
+    bool ok;
+    if (QFileInfo(fn).suffix().toLower() == "pdf") {
+        // one page, the view fitted inside the margins, landscape when the view is wide
+        QPdfWriter pdf(fn);
+        pdf.setCreator("Folio Gable");
+        pdf.setTitle(QFileInfo(doc_->filePath.isEmpty() ? QString("Untitled") : doc_->filePath).completeBaseName());
+        pdf.setPageSize(QPageSize(QPageSize::A4));
+        pdf.setPageOrientation(img.width() >= img.height() ? QPageLayout::Landscape : QPageLayout::Portrait);
+        pdf.setPageMargins(QMarginsF(12, 12, 12, 12), QPageLayout::Millimeter);
+        pdf.setResolution(300);
+        QPainter p(&pdf);
+        ok = p.isActive();
+        if (ok) {
+            QRect page = p.viewport();
+            QSize sz = img.size().scaled(page.size(), Qt::KeepAspectRatio);
+            QRect target(page.x() + (page.width() - sz.width()) / 2, page.y() + (page.height() - sz.height()) / 2, sz.width(), sz.height());
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            p.drawImage(target, img);
+        }
+    } else {
+        ok = img.save(fn);
+    }
+    if (!ok) QMessageBox::warning(this, "Export", "Could not write " + fn);
     else statusBar()->showMessage("Exported " + fn, 4000);
 }
 
@@ -1319,6 +1349,7 @@ void MainWindow::contextMenu(const QPoint& at) {
     if (!sel.empty()) {
         m.addAction(act_["delete"]);
         m.addAction(act_["hide"]);
+        m.addAction(act_["zoomsel"]);
         auto* s = m.addMenu("Select");
         s->addAction("Bounding Edges", [this] {
             std::vector<EntRef> out;
@@ -1352,6 +1383,17 @@ void MainWindow::contextMenu(const QPoint& at) {
         bool locked = false;
         for (int i : doc_->selectedInstances()) locked |= doc_->active().insts[i].locked;
         m.addAction(locked ? act_["unlock"] : act_["lock"]);
+        m.addAction("Reset Scale", [this] {
+            doc_->begin("Reset Scale");
+            for (int i : doc_->selectedInstances()) {
+                Mat4& xf = doc_->active().insts[i].xf;
+                Vec3 o = xf.origin(), x = xf.axis(0).normalized(), y = xf.axis(1).normalized(), z = xf.axis(2).normalized();
+                if (x.cross(y).dot(z) < 0) z = -z;   // undo mirroring too
+                xf = Mat4::fromAxes(o, x, y, z);
+            }
+            doc_->active().touch();
+            doc_->commit();
+        });
     }
     if (!sel.empty()) {
         m.addAction(act_["makegroup"]);

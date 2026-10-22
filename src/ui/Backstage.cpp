@@ -422,7 +422,7 @@ QWidget* Backstage::pageExport() {
     v->addWidget(bigButton("dimension", "AutoCAD DXF", "Faces and edges for CAD programs.", [this] { host_.exportModel("dxf"); }));
     v->addSpacing(8);
     v->addWidget(label("2D graphic", "bsCard"));
-    v->addWidget(bigButton("exportimage", "PNG or JPEG image", "The current view at any resolution.", host_.exportImage));
+    v->addWidget(bigButton("exportimage", "Image or PDF", "The current view as PNG, JPEG or a PDF page, at any resolution.", host_.exportImage));
     v->addStretch(1);
     return w;
 }
