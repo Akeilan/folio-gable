@@ -16,6 +16,8 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QMenu>
+#include <QScrollBar>
+#include <QTimer>
 #include <QMessageBox>
 #include <QPainter>
 #include <QRandomGenerator>
@@ -106,8 +108,12 @@ CollapsibleSection* Tray::addPanel(const QString& title, QWidget* w, bool expand
 void Tray::showPanel(const QString& title) {
     for (auto* s : sections_)
         if (s->title() == title) {
-            s->setExpanded(!s->expanded() || true);
-            ensureWidgetVisible(s);
+            s->setExpanded(true);
+            // scroll vertically only; the tray never scrolls sideways
+            QTimer::singleShot(0, this, [this, s] {
+                verticalScrollBar()->setValue(s->y());
+                horizontalScrollBar()->setValue(0);
+            });
         }
 }
 
@@ -137,20 +143,17 @@ EntityInfoPanel::EntityInfoPanel(Document* d, QWidget* parent) : QWidget(parent)
 }
 
 void EntityInfoPanel::clearBody() {
-    QLayoutItem* it;
-    while ((it = bodyLay_->takeAt(0))) {
-        if (it->widget()) it->widget()->deleteLater();
-        if (it->layout()) {
-            while (it->layout()->count() > 0) {
-                QLayoutItem* c = it->layout()->takeAt(0);
-                if (!c) break;
-                if (c->widget()) c->widget()->deleteLater();
-                delete c;
-            }
-            it->layout()->deleteLater();
-        }
-        delete it;
+    // Replace the whole body widget: everything the last selection showed goes with it
+    // (rows, nested layouts, labels made by QFormLayout), immediately hidden.
+    if (body_) {
+        body_->hide();
+        layout()->removeWidget(body_);
+        body_->deleteLater();
     }
+    body_ = new QWidget;
+    bodyLay_ = new QVBoxLayout(body_);
+    bodyLay_->setContentsMargins(0, 0, 0, 0);
+    layout()->addWidget(body_);
 }
 
 QComboBox* EntityInfoPanel::tagCombo(int current) {
