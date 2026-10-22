@@ -11,6 +11,14 @@ sudo apt install ./folio-gable_2.0.0_amd64.deb
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
 
+## What's new in 2.0
+
+- Folio suite window: purple title bar with Save/Undo/Redo and command search, ribbon tabs (Home, Draw, Modify, Construct, Solids, Terrain, Camera, View, Help, and Group Editing while a group is open), KeyTips, File view with templates, recent models with thumbnails, Info, Export and Options; new suite-style icon set.
+- Solid tools now handle solids that share faces (boxes on the same ground, touching walls).
+- Follow Me picks small profiles reliably and runs closed paths the right way; Push/Pull no longer snaps to the face it is pushing; Intersection inference; Ctrl draws rectangles from the centre.
+- Pictures can be imported as images or textures (or dropped on the window); the view exports to PDF; sections can make a group from the slice.
+- Entity Info edits edge length and group position and size; Reset Scale and Zoom Selection in the context menu.
+
 ## Keyboard (SketchUp defaults)
 
 | Key | Tool | Key | Tool |
