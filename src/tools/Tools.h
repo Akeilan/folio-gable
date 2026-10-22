@@ -530,8 +530,8 @@ public:
     QString title() const override { return "Orbit"; }
     void mousePress(const MouseEv& e) override;
     void mouseMove(const MouseEv& e) override;
-    void mouseRelease(const MouseEv&) override { down_ = false; }
-    QString status() const override { return "Drag to orbit. Shift = pan."; }
+    void mouseRelease(const MouseEv&) override;
+    QString status() const override { return "Drag to orbit about the point under the cursor. Shift = pan."; }
     QCursor cursor() const override { return Qt::OpenHandCursor; }
 private:
     bool down_ = false;

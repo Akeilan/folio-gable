@@ -77,19 +77,36 @@ double Camera::pixelSize(const Vec3& p) const {
 }
 
 void Camera::orbit(double dx, double dy, const Vec3& pivot) {
-    double yaw = -dx * 0.006, pitch = -dy * 0.006;
-    Vec3 z(0, 0, 1);
-    Mat4 ry = Mat4::rotationAbout(pivot, z, yaw);
-    s->eye = ry.point(s->eye);
-    s->target = ry.point(s->target);
-    // pitch around camera right axis, clamped so we never cross the pole
+    // Turntable orbit with the blue axis kept vertical. Heading and pitch are tracked
+    // explicitly so looking straight down or up (top/bottom views) stays stable.
+    const double k = 0.0065;   // radians per pixel
+    const Vec3 Z(0, 0, 1);
     Vec3 f = forward();
-    double cur = std::asin(std::clamp(f.z, -1.0, 1.0));
-    double np = std::clamp(cur + pitch, -kPi / 2 + 0.002, kPi / 2 - 0.002);
-    Mat4 rp = Mat4::rotationAbout(pivot, right(), np - cur);
-    s->eye = rp.point(s->eye);
-    s->target = rp.point(s->target);
-    s->up = z;
+    Vec3 h(f.x, f.y, 0);
+    if (h.length() < 1e-4) {
+        // looking straight down/up: the screen's up direction gives the heading
+        Vec3 u(s->up.x, s->up.y, 0);
+        if (u.length() < 1e-9) u = Vec3(0, 1, 0);
+        h = f.z < 0 ? u : -u;
+    }
+    h = h.normalized();
+    Vec3 r0 = h.cross(Z).normalized();       // camera right (horizontal)
+    Vec3 u0 = r0.cross(f).normalized();      // camera up
+    double pitch = std::asin(std::clamp(f.z, -1.0, 1.0));
+    // eye relative to the pivot, in the old camera frame
+    Vec3 v = s->eye - pivot;
+    double a = v.dot(f), b = v.dot(r0), c = v.dot(u0);
+    double dist = distance();
+    // new heading and pitch
+    double yaw = -dx * k;
+    Vec3 h1 = Mat4::rotation(Z, yaw).vector(h).normalized();
+    double p1 = std::clamp(pitch - dy * k, -kPi / 2 + 1e-3, kPi / 2 - 1e-3);
+    Vec3 f1 = (h1 * std::cos(p1) + Z * std::sin(p1)).normalized();
+    Vec3 r1 = h1.cross(Z).normalized();
+    Vec3 u1 = r1.cross(f1).normalized();
+    s->eye = pivot + f1 * a + r1 * b + u1 * c;
+    s->target = s->eye + f1 * dist;
+    s->up = Z;
 }
 
 void Camera::pan(double dx, double dy, const Vec3& pivot) {

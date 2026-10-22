@@ -50,7 +50,10 @@ public:
     void pushViewHistory();
 
     QImage renderImage(int w, int h, bool transparent);
-    Vec3 orbitPivot(double x, double y);
+    Vec3 orbitPivot(double x, double y);   // what is under the cursor, else emptyPivot()
+    Vec3 emptyPivot();                      // pivot when the cursor is over empty space
+    void beginOrbit(const Vec3& pivot);
+    void endOrbit();
 
     std::vector<EntRef> hover;
     bool hoverInstance = false;
@@ -87,6 +90,8 @@ private:
     enum class Nav { None, Orbit, Pan };
     Nav nav_ = Nav::None;
     Vec3 navPivot_;
+    bool orbitPivotShown_ = false;
+    Vec3 orbitPivotPt_;
     double lastX_ = 0, lastY_ = 0;
     QElapsedTimer middleClickTimer_;
     double middlePressX_ = 0, middlePressY_ = 0;

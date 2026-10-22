@@ -161,6 +161,21 @@ QImage Viewport::renderImage(int w, int h, bool transparent) {
 void Viewport::paintOverlay2D() {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    if (orbitPivotShown_) {
+        // the point the view turns about
+        double sx, sy, d;
+        if (cam.project(orbitPivotPt_, sx, sy, &d) && (!cam.s->perspective || d > 0)) {
+            p.setPen(QPen(QColor(255, 255, 255, 220), 3));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QPointF(sx, sy), 6, 6);
+            p.setPen(QPen(QColor(107, 63, 160), 1.6));
+            p.drawEllipse(QPointF(sx, sy), 6, 6);
+            p.drawLine(QPointF(sx - 10, sy), QPointF(sx - 3, sy));
+            p.drawLine(QPointF(sx + 3, sy), QPointF(sx + 10, sy));
+            p.drawLine(QPointF(sx, sy - 10), QPointF(sx, sy - 3));
+            p.drawLine(QPointF(sx, sy + 3), QPointF(sx, sy + 10));
+        }
+    }
     QFont f = font();
     f.setPointSizeF(9.5);
     p.setFont(f);
@@ -347,15 +362,63 @@ static MouseEv toEv(QMouseEvent* e) {
 }
 
 Vec3 Viewport::orbitPivot(double x, double y) {
+    // 1) whatever is under the cursor
     Picker::DeepResult r = picker.deep(x, y, 0, 4);
     if (r.face.valid()) return r.face.point;
     if (r.edge.valid()) return r.edge.point;
+    return emptyPivot();
+}
+
+Vec3 Viewport::emptyPivot() {
+    const Vec3 eye = cam.s->eye, f = cam.forward();
+    auto inFront = [&](const Vec3& p) { return (p - eye).dot(f) > cam.nearZ * 2; };
+    // 2) the selection, when it is in view
+    BBox sb = doc->selectionBBox();
+    if (sb.valid()) {
+        double sx, sy;
+        Vec3 c = sb.center();
+        if (inFront(c) && cam.project(c, sx, sy) && sx >= 0 && sy >= 0 && sx <= width() && sy <= height()) return c;
+    }
+    // 3) what is in the middle of the screen
+    Picker::DeepResult m = picker.deep(width() * 0.5, height() * 0.5, 0, 6);
+    if (m.face.valid()) return m.face.point;
+    if (m.edge.valid()) return m.edge.point;
+    // 4) on the line of sight, at the depth of the model, so the view turns about the middle of
+    //    the screen instead of swinging around a point off to the side
     BBox b = doc->model.worldBBox();
     if (b.valid()) {
-        // pivot at scene center projected along view
-        return b.center();
+        double dmin = 1e300, dmax = -1e300;
+        for (int i = 0; i < 8; ++i) {
+            Vec3 c((i & 1) ? b.hi.x : b.lo.x, (i & 2) ? b.hi.y : b.lo.y, (i & 4) ? b.hi.z : b.lo.z);
+            double d = (c - eye).dot(f);
+            dmin = std::min(dmin, d);
+            dmax = std::max(dmax, d);
+        }
+        if (dmax > cam.nearZ * 2) {
+            double d = (b.center() - eye).dot(f);
+            d = std::clamp(d, std::max(dmin, cam.nearZ * 20), dmax);
+            return eye + f * d;
+        }
     }
-    return cam.s->target;
+    // 5) nothing to look at: the camera's own target, at a sane distance
+    double d = std::clamp(cam.distance(), 500.0, 1e6);
+    return eye + f * d;
+}
+
+void Viewport::beginOrbit(const Vec3& pivot) {
+    // keep the camera target on the line of sight at the pivot's depth, so later zooms and
+    // empty-space orbits use a meaningful distance
+    Vec3 f = cam.forward();
+    double d = (pivot - cam.s->eye).dot(f);
+    if (d > cam.nearZ * 2) cam.s->target = cam.s->eye + f * d;
+    orbitPivotShown_ = true;
+    orbitPivotPt_ = pivot;
+    update();
+}
+
+void Viewport::endOrbit() {
+    orbitPivotShown_ = false;
+    update();
 }
 
 void Viewport::mousePressEvent(QMouseEvent* e) {
@@ -383,6 +446,7 @@ void Viewport::mousePressEvent(QMouseEvent* e) {
         middlePressY_ = lastY_;
         nav_ = (e->modifiers() & Qt::ShiftModifier) ? Nav::Pan : Nav::Orbit;
         navPivot_ = orbitPivot(lastX_, lastY_);
+        if (nav_ == Nav::Orbit) beginOrbit(navPivot_);
         if (nav_ == Nav::Orbit) setCursor(Qt::ClosedHandCursor);
         else setCursor(Qt::SizeAllCursor);
         pushViewHistory();
@@ -405,6 +469,7 @@ void Viewport::mousePressEvent(QMouseEvent* e) {
 void Viewport::mouseReleaseEvent(QMouseEvent* e) {
     if (e->button() == Qt::MiddleButton) {
         nav_ = Nav::None;
+        endOrbit();
         if (tool_) setCursor(tool_->cursor());
         emit cameraChanged();
         return;
@@ -458,11 +523,11 @@ void Viewport::wheelEvent(QWheelEvent* e) {
     bool have = r.face.valid() || r.edge.valid();
     Vec3 p = r.face.valid() ? r.face.point : (r.edge.valid() ? r.edge.point : Vec3());
     if (!have) {
-        // zoom toward the scene depth under cursor
-        BBox b = doc->model.worldBBox();
-        if (b.valid()) {
+        // over empty space: zoom toward the cursor at the depth the view is turning about
+        Vec3 ep = emptyPivot();
+        double d = (ep - cam.s->eye).dot(cam.forward());
+        if (d > cam.nearZ * 2) {
             Ray ray = cam.ray(x, y);
-            double d = std::max((b.center() - cam.s->eye).dot(cam.forward()), cam.distance() * 0.2);
             p = ray.at(d / std::max(ray.d.dot(cam.forward()), 1e-3));
             have = true;
         }
