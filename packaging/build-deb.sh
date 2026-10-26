@@ -44,8 +44,8 @@ Description: Native 3D modeler with push/pull, inference and components
  classic push/pull modelers: sticky geometry with automatic faces,
  inference snapping with axis locks, groups and components, solid tools,
  follow me, section planes, sun shadows, scenes, styles, tags,
- materials with textures, dimensions and text, and OBJ/STL/DAE/DXF
- import and export.
+ materials with textures, dimensions and text, match photo, OBJ/STL/DAE/DXF
+ import and export, and glTF/GLB and 3MF export.
 EOF
 fakeroot dpkg-deb --build -Zxz "$STAGE" "$OUT/folio-gable_${VERSION}_amd64.deb" 2>/dev/null ||
     dpkg-deb --root-owner-group --build -Zxz "$STAGE" "$OUT/folio-gable_${VERSION}_amd64.deb"

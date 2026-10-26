@@ -6,6 +6,10 @@
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSaveFile>
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QUrl>
@@ -112,11 +116,22 @@ void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<World
                 geom::faceTriangles(E, f, buf);
                 Vec3 n = xf.normal(F.plane.n);
                 int mat = F.matFront >= 0 ? F.matFront : inheritMat;
+                TexMap tm = geom::effectiveTexMap(F, false);
+                double tw = 1000, th = 1000;
+                if (mat >= 0 && mat < (int)m.materials.size()) {
+                    tw = std::max(m.materials[mat].texW, 1e-6);
+                    th = std::max(m.materials[mat].texH, 1e-6);
+                }
+                auto uvOf = [&](const Vec3& p) { return Vec2((p.dot(tm.uAxis) + tm.uOff) / tw, (p.dot(tm.vAxis) + tm.vOff) / th); };
                 for (size_t i = 0; i + 2 < buf.size(); i += 3) {
                     WorldTri t;
+                    size_t k1 = mirror ? i + 2 : i + 1, k2 = mirror ? i + 1 : i + 2;
                     t.p[0] = xf.point(buf[i]);
-                    t.p[1] = xf.point(buf[mirror ? i + 2 : i + 1]);
-                    t.p[2] = xf.point(buf[mirror ? i + 1 : i + 2]);
+                    t.p[1] = xf.point(buf[k1]);
+                    t.p[2] = xf.point(buf[k2]);
+                    t.uv[0] = uvOf(buf[i]);
+                    t.uv[1] = uvOf(buf[k1]);
+                    t.uv[2] = uvOf(buf[k2]);
                     t.n = n;
                     t.material = mat;
                     tris.push_back(t);
@@ -951,6 +966,298 @@ static bool exportDAE(const Model& m, const QString& path, const ExportOptions& 
     return true;
 }
 
+// ------------------------------------------------------------------ glTF 2.0
+
+static void putF(QByteArray& b, float v) { b.append((const char*)&v, 4); }
+static void putU32(QByteArray& b, quint32 v) { b.append((const char*)&v, 4); }   // little-endian hosts
+static void pad4(QByteArray& b, char c = 0) { while (b.size() % 4) b.append(c); }
+
+static bool exportGLTF(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel, bool glb) {
+    std::vector<WorldTri> tris;
+    std::vector<WorldEdge> edges;
+    collectWorld(m, tris, opt.exportEdges ? &edges : nullptr, true, sel);
+    if (tris.empty() && edges.empty()) { if (err) *err = "There is nothing to export."; return false; }
+    // glTF is Y-up and in metres
+    auto P = [](const Vec3& p) { return Vec3(p.x, p.z, -p.y) / 1000.0; };
+    auto N = [](const Vec3& n) { return Vec3(n.x, n.z, -n.y); };
+    QByteArray bin;
+    QJsonArray views, accessors, materials, images, textures, primitives;
+    auto addView = [&](const QByteArray& data, int target) {
+        pad4(bin);
+        QJsonObject v{{"buffer", 0}, {"byteOffset", (int)bin.size()}, {"byteLength", (int)data.size()}};
+        if (target) v["target"] = target;
+        bin.append(data);
+        views.append(v);
+        return (int)views.size() - 1;
+    };
+    auto addAccessor = [&](int view, int count, const char* type, const QJsonArray& mn = {}, const QJsonArray& mx = {}) {
+        QJsonObject a{{"bufferView", view}, {"componentType", 5126}, {"count", count}, {"type", type}};
+        if (!mn.isEmpty()) { a["min"] = mn; a["max"] = mx; }
+        accessors.append(a);
+        return (int)accessors.size() - 1;
+    };
+    std::map<int, std::vector<const WorldTri*>> byMat;
+    for (auto& t : tris) byMat[t.material].push_back(&t);
+    std::map<int, int> matIndex;
+    auto materialFor = [&](int mat) {
+        auto it = matIndex.find(mat);
+        if (it != matIndex.end()) return it->second;
+        QJsonObject pbr{{"metallicFactor", 0.0}, {"roughnessFactor", 0.9}};
+        QJsonObject mo{{"doubleSided", true}};
+        QColor c = mat >= 0 ? m.materials[mat].color : m.style.frontColor;
+        double a = mat >= 0 ? m.materials[mat].alpha : 1.0;
+        bool tex = mat >= 0 && m.materials[mat].hasTexture && !m.materials[mat].image().isNull();
+        if (tex) {
+            const Material& M = m.materials[mat];
+            QByteArray png = M.texturePng;
+            if (!png.startsWith("\x89PNG")) {
+                png.clear();
+                QBuffer b(&png);
+                b.open(QIODevice::WriteOnly);
+                M.image().save(&b, "PNG");
+            }
+            int iv = addView(png, 0);
+            images.append(QJsonObject{{"bufferView", iv}, {"mimeType", "image/png"}, {"name", M.name}});
+            textures.append(QJsonObject{{"source", (int)images.size() - 1}, {"sampler", 0}});
+            pbr["baseColorTexture"] = QJsonObject{{"index", (int)textures.size() - 1}};
+            if (!M.colorize) c = QColor(255, 255, 255);
+        }
+        pbr["baseColorFactor"] = QJsonArray{c.redF(), c.greenF(), c.blueF(), a};
+        mo["pbrMetallicRoughness"] = pbr;
+        mo["name"] = mat >= 0 ? m.materials[mat].name : QString("Default");
+        if (a < 1) mo["alphaMode"] = "BLEND";
+        materials.append(mo);
+        matIndex[mat] = (int)materials.size() - 1;
+        return matIndex[mat];
+    };
+    for (auto& [mat, list] : byMat) {
+        QByteArray pos, nrm, uv;
+        Vec3 lo(1e300, 1e300, 1e300), hi(-1e300, -1e300, -1e300);
+        for (auto* t : list) {
+            Vec3 n = N(t->n);
+            for (int k = 0; k < 3; ++k) {
+                Vec3 p = P(t->p[k]);
+                lo = Vec3(std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z));
+                hi = Vec3(std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z));
+                putF(pos, (float)p.x); putF(pos, (float)p.y); putF(pos, (float)p.z);
+                putF(nrm, (float)n.x); putF(nrm, (float)n.y); putF(nrm, (float)n.z);
+                // glTF puts the texture's first row at v = 0; ours runs upwards
+                putF(uv, (float)t->uv[k].x); putF(uv, (float)-t->uv[k].y);
+            }
+        }
+        int count = (int)list.size() * 3;
+        // bounds from the float values actually stored
+        auto fl = [](double v) { return (double)(float)v; };
+        QJsonObject attrs;
+        attrs["POSITION"] = addAccessor(addView(pos, 34962), count, "VEC3", QJsonArray{fl(lo.x), fl(lo.y), fl(lo.z)}, QJsonArray{fl(hi.x), fl(hi.y), fl(hi.z)});
+        attrs["NORMAL"] = addAccessor(addView(nrm, 34962), count, "VEC3");
+        int mi = materialFor(mat);
+        if (mat >= 0 && m.materials[mat].hasTexture) attrs["TEXCOORD_0"] = addAccessor(addView(uv, 34962), count, "VEC2");
+        primitives.append(QJsonObject{{"attributes", attrs}, {"material", mi}, {"mode", 4}});
+    }
+    if (!edges.empty()) {
+        QByteArray pos;
+        Vec3 lo(1e300, 1e300, 1e300), hi(-1e300, -1e300, -1e300);
+        for (auto& e : edges)
+            for (const Vec3& q : {e.a, e.b}) {
+                Vec3 p = P(q);
+                lo = Vec3(std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z));
+                hi = Vec3(std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z));
+                putF(pos, (float)p.x); putF(pos, (float)p.y); putF(pos, (float)p.z);
+            }
+        auto fl = [](double v) { return (double)(float)v; };
+        int acc = addAccessor(addView(pos, 34962), (int)edges.size() * 2, "VEC3", QJsonArray{fl(lo.x), fl(lo.y), fl(lo.z)}, QJsonArray{fl(hi.x), fl(hi.y), fl(hi.z)});
+        QColor ec = m.style.edgeColor;
+        materials.append(QJsonObject{{"name", "Edges"}, {"pbrMetallicRoughness", QJsonObject{{"baseColorFactor", QJsonArray{ec.redF(), ec.greenF(), ec.blueF(), 1.0}}, {"metallicFactor", 0.0}}}});
+        primitives.append(QJsonObject{{"attributes", QJsonObject{{"POSITION", acc}}}, {"material", (int)materials.size() - 1}, {"mode", 1}});
+    }
+    pad4(bin);
+    QJsonObject root;
+    root["asset"] = QJsonObject{{"version", "2.0"}, {"generator", "Folio Gable"}};
+    root["scene"] = 0;
+    root["scenes"] = QJsonArray{QJsonObject{{"nodes", QJsonArray{0}}}};
+    QString name = QFileInfo(path).completeBaseName();
+    root["nodes"] = QJsonArray{QJsonObject{{"mesh", 0}, {"name", name}}};
+    root["meshes"] = QJsonArray{QJsonObject{{"primitives", primitives}, {"name", name}}};
+    root["materials"] = materials;
+    if (!images.isEmpty()) {
+        root["images"] = images;
+        root["textures"] = textures;
+        root["samplers"] = QJsonArray{QJsonObject{{"magFilter", 9729}, {"minFilter", 9987}, {"wrapS", 10497}, {"wrapT", 10497}}};
+    }
+    root["accessors"] = accessors;
+    root["bufferViews"] = views;
+    QJsonObject buf{{"byteLength", (int)bin.size()}};
+    if (!glb) buf["uri"] = QString("data:application/octet-stream;base64,") + QString::fromLatin1(bin.toBase64());
+    root["buffers"] = QJsonArray{buf};
+    QByteArray json = QJsonDocument(root).toJson(glb ? QJsonDocument::Compact : QJsonDocument::Indented);
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) { if (err) *err = "Cannot write " + path; return false; }
+    if (glb) {
+        pad4(json, ' ');
+        QByteArray out;
+        putU32(out, 0x46546C67);   // "glTF"
+        putU32(out, 2);
+        putU32(out, (quint32)(12 + 8 + json.size() + 8 + bin.size()));
+        putU32(out, (quint32)json.size());
+        putU32(out, 0x4E4F534A);   // JSON
+        out.append(json);
+        putU32(out, (quint32)bin.size());
+        putU32(out, 0x004E4942);   // BIN
+        out.append(bin);
+        f.write(out);
+    } else {
+        f.write(json);
+    }
+    if (!f.commit()) { if (err) *err = "Cannot write " + path; return false; }
+    return true;
+}
+
+// ------------------------------------------------------------------ 3MF
+
+static quint32 crc32Of(const QByteArray& d) {
+    static quint32 table[256];
+    static bool init = false;
+    if (!init) {
+        for (quint32 i = 0; i < 256; ++i) {
+            quint32 c = i;
+            for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+        init = true;
+    }
+    quint32 c = 0xFFFFFFFFu;
+    for (unsigned char b : d) c = table[(c ^ b) & 0xFF] ^ (c >> 8);
+    return c ^ 0xFFFFFFFFu;
+}
+
+// A ZIP archive with deflated entries (what 3MF packages are).
+static QByteArray zipArchive(const std::vector<std::pair<QString, QByteArray>>& files) {
+    auto u16 = [](QByteArray& b, quint16 v) { b.append((char)(v & 0xff)); b.append((char)(v >> 8)); };
+    auto u32 = [](QByteArray& b, quint32 v) { for (int i = 0; i < 4; ++i) b.append((char)((v >> (8 * i)) & 0xff)); };
+    QByteArray out, cd;
+    const quint16 time = 0, date = (quint16)(((2026 - 1980) << 9) | (1 << 5) | 1);
+    for (auto& [name, data] : files) {
+        QByteArray z = qCompress(data, 9);
+        // qCompress: 4-byte size, then a zlib stream (2-byte header, raw deflate, 4-byte checksum)
+        QByteArray raw = z.mid(6, z.size() - 10);
+        bool store = raw.size() >= data.size();
+        const QByteArray& body = store ? data : raw;
+        quint32 crc = crc32Of(data);
+        QByteArray nm = name.toUtf8();
+        quint32 off = (quint32)out.size();
+        u32(out, 0x04034b50); u16(out, 20); u16(out, 0x0800); u16(out, store ? 0 : 8); u16(out, time); u16(out, date);
+        u32(out, crc); u32(out, (quint32)body.size()); u32(out, (quint32)data.size()); u16(out, (quint16)nm.size()); u16(out, 0);
+        out.append(nm);
+        out.append(body);
+        u32(cd, 0x02014b50); u16(cd, 20); u16(cd, 20); u16(cd, 0x0800); u16(cd, store ? 0 : 8); u16(cd, time); u16(cd, date);
+        u32(cd, crc); u32(cd, (quint32)body.size()); u32(cd, (quint32)data.size()); u16(cd, (quint16)nm.size()); u16(cd, 0); u16(cd, 0);
+        u16(cd, 0); u16(cd, 0); u32(cd, 0); u32(cd, off);
+        cd.append(nm);
+    }
+    quint32 cdOff = (quint32)out.size();
+    out.append(cd);
+    u32(out, 0x06054b50); u16(out, 0); u16(out, 0); u16(out, (quint16)files.size()); u16(out, (quint16)files.size());
+    u32(out, (quint32)cd.size()); u32(out, cdOff); u16(out, 0);
+    return out;
+}
+
+static int prepareSTL(std::vector<WorldTri>& tris);
+
+static bool export3MF(const Model& m, const QString& path, QString* err, const std::vector<EntRef>* sel) {
+    std::vector<WorldTri> tris;
+    collectWorld(m, tris, nullptr, true, sel);
+    if (tris.empty()) { if (err) *err = "There are no faces to export."; return false; }
+    int open = prepareSTL(tris);   // consistent winding, closed shells facing outward
+    // weld corners, then split into shells (triangles connected through shared corners)
+    std::map<std::tuple<long long, long long, long long>, int> ids;
+    std::vector<Vec3> verts;
+    std::vector<std::array<int, 3>> tv(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i)
+        for (int k = 0; k < 3; ++k) {
+            const Vec3& p = tris[i].p[k];
+            auto key = std::make_tuple((long long)std::llround(p.x * 1e3), (long long)std::llround(p.y * 1e3), (long long)std::llround(p.z * 1e3));
+            auto it = ids.find(key);
+            if (it == ids.end()) { it = ids.emplace(key, (int)verts.size()).first; verts.push_back(p); }
+            tv[i][k] = it->second;
+        }
+    std::vector<int> parent(verts.size());
+    for (size_t i = 0; i < parent.size(); ++i) parent[i] = (int)i;
+    std::function<int(int)> root = [&](int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; };
+    for (auto& t : tv) { parent[root(t[1])] = root(t[0]); parent[root(t[2])] = root(t[0]); }
+    std::map<int, std::vector<int>> shells;
+    for (size_t i = 0; i < tris.size(); ++i)
+        if (tv[i][0] != tv[i][1] && tv[i][1] != tv[i][2] && tv[i][0] != tv[i][2]) shells[root(tv[i][0])].push_back((int)i);
+    // colours of the materials used
+    std::map<int, int> colorIdx;
+    QString colors;
+    auto hex = [](const QColor& c, double a) {
+        return QString("#%1%2%3%4").arg(c.red(), 2, 16, QChar('0')).arg(c.green(), 2, 16, QChar('0')).arg(c.blue(), 2, 16, QChar('0'))
+            .arg((int)std::lround(std::clamp(a, 0.0, 1.0) * 255), 2, 16, QChar('0')).toUpper();
+    };
+    for (auto& t : tris)
+        if (!colorIdx.count(t.material)) {
+            int k = (int)colorIdx.size();
+            colorIdx[t.material] = k;
+            QString nm = t.material >= 0 ? m.materials[t.material].name.toHtmlEscaped() : QString("Default");
+            QColor c = t.material >= 0 ? m.materials[t.material].color : m.style.frontColor;
+            double a = t.material >= 0 ? m.materials[t.material].alpha : 1.0;
+            colors += QString("      <base name=\"%1\" displaycolor=\"%2\"/>\n").arg(nm, hex(c, a));
+        }
+    QString xml;
+    QTextStream ts(&xml);
+    ts.setRealNumberNotation(QTextStream::FixedNotation);
+    ts.setRealNumberPrecision(4);
+    ts << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+          "<model unit=\"millimeter\" xml:lang=\"en-US\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n"
+          "  <metadata name=\"Application\">Folio Gable</metadata>\n"
+          "  <resources>\n    <basematerials id=\"1\">\n" << colors << "    </basematerials>\n";
+    int objId = 2;
+    QString build;
+    for (auto& [r, list] : shells) {
+        std::map<int, int> local;
+        QString vx, tx;
+        QTextStream vs(&vx), tts(&tx);
+        vs.setRealNumberNotation(QTextStream::FixedNotation);
+        vs.setRealNumberPrecision(4);
+        for (int t : list)
+            for (int k = 0; k < 3; ++k)
+                if (!local.count(tv[t][k])) {
+                    int n = (int)local.size();
+                    local[tv[t][k]] = n;
+                    const Vec3& p = verts[tv[t][k]];
+                    vs << "          <vertex x=\"" << p.x << "\" y=\"" << p.y << "\" z=\"" << p.z << "\"/>\n";
+                }
+        for (int t : list)
+            tts << "          <triangle v1=\"" << local[tv[t][0]] << "\" v2=\"" << local[tv[t][1]] << "\" v3=\"" << local[tv[t][2]]
+                << "\" pid=\"1\" p1=\"" << colorIdx[tris[t].material] << "\"/>\n";
+        vs.flush();
+        tts.flush();
+        ts << "    <object id=\"" << objId << "\" type=\"model\" pid=\"1\" pindex=\"" << colorIdx[tris[list[0]].material] << "\">\n"
+           << "      <mesh>\n        <vertices>\n" << vx << "        </vertices>\n        <triangles>\n" << tx
+           << "        </triangles>\n      </mesh>\n    </object>\n";
+        build += QString("    <item objectid=\"%1\"/>\n").arg(objId);
+        ++objId;
+    }
+    ts << "  </resources>\n  <build>\n" << build << "  </build>\n</model>\n";
+    ts.flush();
+    QByteArray types = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                       "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
+                       "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
+                       "<Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>\n";
+    QByteArray rels = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+                      "<Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" "
+                      "Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>\n";
+    QByteArray zip = zipArchive({{"[Content_Types].xml", types}, {"_rels/.rels", rels}, {"3D/3dmodel.model", xml.toUtf8()}});
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) { if (err) *err = "Cannot write " + path; return false; }
+    f.write(zip);
+    if (!f.commit()) { if (err) *err = "Cannot write " + path; return false; }
+    if (err) *err = open ? QString("warning: %1 open edge%2, the mesh is not watertight").arg(open).arg(open == 1 ? "" : "s") : QString();
+    return true;
+}
+
 // ------------------------------------------------------------------ dispatch
 
 int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
@@ -1007,6 +1314,8 @@ bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, Q
     if (ext == "stl") return exportSTL(m, path, opt, err, sel);
     if (ext == "dae") return exportDAE(m, path, opt, err, sel);
     if (ext == "dxf") return exportDXF(m, path, opt, err, sel);
+    if (ext == "gltf" || ext == "glb") return exportGLTF(m, path, opt, err, sel, ext == "glb");
+    if (ext == "3mf") return export3MF(m, path, err, sel);
     if (err) *err = "Unsupported export type: " + ext;
     return false;
 }

@@ -417,6 +417,8 @@ QWidget* Backstage::pageExport() {
     QWidget* w = frame("Export", v);
     v->addWidget(label("3D model", "bsCard"));
     v->addWidget(bigButton("solid_outer", "STL", "For 3D printing. Shells are checked and faced outward.", [this] { host_.exportModel("stl"); }));
+    v->addWidget(bigButton("solid_union", "3MF", "For 3D printing, with colours; one object per solid.", [this] { host_.exportModel("3mf"); }));
+    v->addWidget(bigButton("export", "glTF / GLB", "For Blender, game engines and the web, with materials and textures.", [this] { host_.exportModel("glb"); }));
     v->addWidget(bigButton("components", "Wavefront OBJ", "With materials (.mtl) and textures.", [this] { host_.exportModel("obj"); }));
     v->addWidget(bigButton("styles", "COLLADA (.dae)", "For renderers and other modelers.", [this] { host_.exportModel("dae"); }));
     v->addWidget(bigButton("dimension", "AutoCAD DXF", "Faces and edges for CAD programs.", [this] { host_.exportModel("dxf"); }));
