@@ -305,6 +305,7 @@ Ribbon::Ribbon(QWidget* parent) : QWidget(parent) {
     tabLay_ = new QHBoxLayout(tabRow_);
     tabLay_->setContentsMargins(6, 0, 6, 0);
     tabLay_->setSpacing(0);
+    tabRow_->setFixedHeight(34);   // suite spec: tab row 34 px
     file_ = new QToolButton;
     file_->setText("File");
     file_->setObjectName("fileTab");
@@ -327,10 +328,10 @@ Ribbon::Ribbon(QWidget* parent) : QWidget(parent) {
     body_->setObjectName("folioRibbonBody");
     body_->setAttribute(Qt::WA_StyledBackground);
     auto* bl = new QVBoxLayout(body_);
-    bl->setContentsMargins(0, 0, 0, 0);
+    bl->setContentsMargins(0, 0, 0, 1);   // leave the 1 px bottom line visible
     stack_ = new QStackedWidget;
     bl->addWidget(stack_);
-    body_->setFixedHeight(96);
+    body_->setFixedHeight(97);            // suite spec: 96 px body + 1 px line
     v->addWidget(body_);
     qApp->installEventFilter(this);
 }
@@ -401,7 +402,7 @@ void Ribbon::placeFloatingBody() {
     QWidget* w = window();
     if (body_->parentWidget() != w) body_->setParent(w);
     QPoint p = tabRow_->mapTo(w, QPoint(0, tabRow_->height()));
-    body_->setGeometry(p.x(), p.y(), tabRow_->width(), 96);
+    body_->setGeometry(p.x(), p.y(), tabRow_->width(), 97);
 }
 
 void Ribbon::hideFloatingBody() {

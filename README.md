@@ -6,7 +6,7 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.2.0_amd64.deb
+sudo apt install ./folio-gable_2.2.1_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
