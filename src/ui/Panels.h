@@ -15,6 +15,7 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <functional>
 
 namespace gable {
 
@@ -75,11 +76,23 @@ private:
 
 class MaterialsPanel : public QWidget {
     Q_OBJECT
+    friend class Auditor;
 public:
     MaterialsPanel(Document* d, QWidget* parent = nullptr);
     void refresh();
     int current() const { return current_; }
     void setCurrent(int m);
+    void showEditor(bool edit);          // the Select / Edit pages
+    bool editorShown() const;
+    // the current material's texture from a picture file
+    bool loadTexture(const QString& path);
+    // A collection is a .gmat file (the native format holding only materials). Collections the
+    // person imports live in collectionsDir() and appear in the source list.
+    bool exportCollection(const QString& path, const std::vector<int>& which, QString* err = nullptr) const;
+    bool importCollection(const QString& path, QString* err = nullptr);
+    bool removeCollection(int source);
+    static QString collectionsDir();
+    static bool readCollection(const QString& path, std::vector<Material>& out, QString* err = nullptr);
 signals:
     void materialChosen(int m);
 private:
@@ -88,9 +101,40 @@ private:
     QListWidget* list_;
     QLabel* currentLabel_;
     QLabel* currentSwatch_;
+    QToolButton* selectTab_;
+    QToolButton* editTab_;
+    QWidget* selectPage_;
+    QWidget* editPage_;
     int current_ = -1;
-    void editMaterial(int m);
+    // editor
+    QLabel* eNote_;
+    QWidget* eForm_;
+    QLineEdit* eName_;
+    ColorButton* eColor_;
+    QPushButton* eResetColor_;
+    QCheckBox* eColorize_;
+    QSlider* eOpacity_;
+    QSpinBox* eOpacityN_;
+    QLabel* eTexPreview_;
+    QLabel* eTexInfo_;
+    QPushButton* eLoad_;
+    QPushButton* eClear_;
+    QPushButton* eExportTex_;
+    QLineEdit* eTexW_;
+    QLineEdit* eTexH_;
+    QToolButton* eLock_;
+    bool updating_ = false;
+    bool dragging_ = false;
+    QStringList collectionFiles_;          // source index 3.. -> file
+    std::vector<Material> collection_;     // materials of the selected collection
+    void buildEditor();
+    void refreshEditor();
+    // Changes the current material as one undo step (or, while a slider is held, live within
+    // the step opened when it was pressed).
+    void applyEdit(const QString& what, const std::function<void(Material&)>& f);
     void addFromLibrary(int libIndex);
+    void addFromCollection(int i);
+    void rescanCollections();
     QIcon swatch(const Material& m) const;
 };
 
