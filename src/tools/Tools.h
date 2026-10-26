@@ -398,6 +398,46 @@ public:
     QCursor cursor() const override { return Qt::PointingHandCursor; }
     std::function<int()> currentMaterial;
     std::function<void(int)> sampled;
+private:
+    // a projected mapping sampled with Alt is painted on as is, while that material stays current
+    bool haveProjected_ = false;
+    int projectedMat_ = -1;
+    TexMap projected_;
+};
+
+// Texture ▸ Position: pins on the face move (red), rotate and scale (green) or scale and shear
+// (blue) the texture; dragging anywhere else on it moves it. Enter or a click away finishes.
+class TexturePositionTool : public Tool {
+public:
+    explicit TexturePositionTool(Viewport* v) : Tool(v) {}
+    QString id() const override { return "texpos"; }
+    QString title() const override { return "Position Texture"; }
+    void target(int face, bool back) { face_ = face; back_ = back; }
+    void activate() override;
+    void deactivate() override { finish(true); }
+    void reset() override { finish(false); }
+    void mousePress(const MouseEv& e) override;
+    void mouseRelease(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    void doubleClick(const MouseEv&) override { finish(true); toSelectTool(); }
+    bool keyPress(QKeyEvent* e) override;
+    void draw(Overlay& ov) override;
+    QString status() const override { return "Drag the red pin to move, green to rotate and scale, blue to scale and shear. Enter or click away when done; Esc cancels."; }
+    QCursor cursor() const override { return Qt::OpenHandCursor; }
+    bool busy() const override { return active_; }
+    bool isActive() const { return active_; }
+    // test hooks: pins in world coordinates (0 red, 1 green, 2 blue)
+    Vec3 pinWorld(int i) const;
+private:
+    int face_ = -1;
+    bool back_ = false;
+    bool active_ = false;
+    int drag_ = -1;          // 0..2 pin, 3 move the whole texture
+    Vec3 pins_[3], start_[3], grab_;
+    double w_ = 1000, h_ = 1000, u0_ = 0, v0_ = 0;   // tile size, coordinates at the red pin
+    bool planePoint(double x, double y, Vec3& out) const;
+    void apply();
+    void finish(bool keep);
 };
 
 class TapeTool : public InferTool {

@@ -1603,6 +1603,18 @@ void transformVertices(Entities& E, const std::vector<int>& verts, const Mat4& m
                 for (auto& h : F.holes) std::reverse(h.begin(), h.end());
             }
         }
+    // Textures of faces that move as a whole move with them.
+    for (int f : faces) {
+        Face& F = E.faces[f];
+        if (!F.alive) continue;
+        bool all = true;
+        for (int v : E.faceVerts(f))
+            if (!vs.count(v)) { all = false; break; }
+        if (!all) continue;
+        // (a face drawn with its own frame gets that placement made explicit, so it stays put on the face)
+        F.texFront = transformTexMap(effectiveTexMap(F, false), m);
+        F.texBack = transformTexMap(effectiveTexMap(F, true), m);
+    }
     // Curves: transform when all their edges move.
     for (auto& c : E.curves) {
         (void)c;
@@ -1894,6 +1906,75 @@ double volume(const Entities& E) {
         for (size_t i = 0; i + 2 < tris.size(); i += 3) v += tris[i].dot(tris[i + 1].cross(tris[i + 2])) / 6.0;
     }
     return v;
+}
+
+// ---------------------------------------------------------------- texture placement
+
+TexMap effectiveTexMap(const Face& F, bool back) {
+    const TexMap& t = back ? F.texBack : F.texFront;
+    if (t.custom) return t;
+    Plane pl = F.plane;
+    if (back) { pl.n = -pl.n; pl.d = -pl.d; }
+    Frame2 fr(pl);
+    TexMap r;
+    r.custom = true;
+    r.projected = t.projected;
+    r.uAxis = fr.u;
+    r.vAxis = fr.v;
+    r.uOff = r.vOff = 0;
+    return r;
+}
+
+Vec3 texPoint(const Plane& pl, const TexMap& t, double u, double v) {
+    Frame2 fr(pl);
+    // p = o + a*fu + b*fv with (p.U + uOff, p.V + vOff) = (u, v)
+    double a11 = fr.u.dot(t.uAxis), a12 = fr.v.dot(t.uAxis), a21 = fr.u.dot(t.vAxis), a22 = fr.v.dot(t.vAxis);
+    double r1 = u - fr.o.dot(t.uAxis) - t.uOff, r2 = v - fr.o.dot(t.vAxis) - t.vOff;
+    double det = a11 * a22 - a12 * a21;
+    if (std::fabs(det) < 1e-18) return fr.o;
+    double a = (r1 * a22 - a12 * r2) / det, b = (a11 * r2 - a21 * r1) / det;
+    return fr.o + fr.u * a + fr.v * b;
+}
+
+bool texMapFromPins(const Plane& pl, const Vec3& p0, const Vec3& p1, const Vec3& p2, double w, double h, TexMap& out,
+                    double u0, double v0) {
+    Frame2 fr(pl);
+    Vec2 q0 = fr.to2(p0), q1 = fr.to2(p1), q2 = fr.to2(p2);
+    double e1x = q1.x - q0.x, e1y = q1.y - q0.y, e2x = q2.x - q0.x, e2y = q2.y - q0.y;
+    double det = e1x * e2y - e2x * e1y;
+    double scale = std::max(1e-12, (e1x * e1x + e1y * e1y) * (e2x * e2x + e2y * e2y));
+    if (std::fabs(det) < 1e-9 * std::sqrt(scale) || w <= 0 || h <= 0) return false;
+    // inverse of [e1 e2] (columns), then rows scaled by w and h
+    double i11 = e2y / det, i12 = -e2x / det, i21 = -e1y / det, i22 = e1x / det;
+    Vec3 U = (fr.u * i11 + fr.v * i12) * w;
+    Vec3 V = (fr.u * i21 + fr.v * i22) * h;
+    bool proj = out.projected;
+    out = TexMap();
+    out.custom = true;
+    out.projected = proj;
+    out.uAxis = U;
+    out.vAxis = V;
+    out.uOff = u0 - U.dot(p0);
+    out.vOff = v0 - V.dot(p0);
+    return true;
+}
+
+TexMap transformTexMap(const TexMap& t, const Mat4& m) {
+    if (!t.custom) return t;
+    Mat4 inv = m.inverted();
+    // uv'(p) = uv(inv p): axis' = inv^T axis, offset' = offset + axis . inv(0)
+    Vec3 o = inv.point(Vec3());
+    auto tr = [&](const Vec3& a) {
+        return Vec3(inv.at(0, 0) * a.x + inv.at(1, 0) * a.y + inv.at(2, 0) * a.z,
+                    inv.at(0, 1) * a.x + inv.at(1, 1) * a.y + inv.at(2, 1) * a.z,
+                    inv.at(0, 2) * a.x + inv.at(1, 2) * a.y + inv.at(2, 2) * a.z);
+    };
+    TexMap r = t;
+    r.uOff = t.uOff + t.uAxis.dot(o);
+    r.vOff = t.vOff + t.vAxis.dot(o);
+    r.uAxis = tr(t.uAxis);
+    r.vAxis = tr(t.vAxis);
+    return r;
 }
 
 }  // namespace geom
