@@ -737,6 +737,18 @@ def _(ic):
     ic.poly([(16, 6), (5, 12), (5, 26), (16, 29)], fill=TINT)
 
 
+@icon("matchphoto")
+def _(ic):
+    ic.rect(3.5, 5.5, 25, 21, fill="#e4edf6")
+    ic.path("M3.5 26.5 L3.5 19 L10 15 L16 18 L16 26.5 Z", fill=TINT, stroke=None)
+    ic.line(16, 26.5, 16, 12, width=1.2)
+    ic.line(16, 12, 28.5, 15.5, stroke=RED, width=1.6)
+    ic.line(16, 19, 28.5, 20.5, stroke=RED, width=1.6)
+    ic.line(16, 12, 3.5, 15.5, stroke=GREEN, width=1.6)
+    ic.line(16, 19, 3.5, 20.5, stroke=GREEN, width=1.6)
+    ic.rect(14, 24.5, 4, 4, fill=GOLD, stroke=INK, width=0.8)
+
+
 @icon("fov")
 def _(ic):
     camera(ic, 2, 11)

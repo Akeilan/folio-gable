@@ -97,6 +97,8 @@ private:
     // commands
     bool maybeSave();
     void newFile();
+    // Camera › Match Photo from a picture file (asks for one when path is empty)
+    bool newMatchPhoto(const QString& path);
     void open();
     bool save();
     bool saveAs();

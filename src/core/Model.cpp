@@ -275,6 +275,93 @@ int Entities::aliveCount(EntKind k) const {
 
 // ---------------------------------------------------------------- Material
 
+MatchPhoto::MatchPhoto() {
+    // two pairs of lines meeting right and left of the picture, like the near corner of a box
+    lines[0][0] = Vec2(0.55, 0.70); lines[0][1] = Vec2(0.85, 0.62);
+    lines[1][0] = Vec2(0.55, 0.30); lines[1][1] = Vec2(0.85, 0.38);
+    lines[2][0] = Vec2(0.45, 0.70); lines[2][1] = Vec2(0.15, 0.62);
+    lines[3][0] = Vec2(0.45, 0.30); lines[3][1] = Vec2(0.15, 0.38);
+}
+
+static Vec2 photoToCam(const Vec2& q, double aspect) { return Vec2((q.x - 0.5) * aspect, -(q.y - 0.5)); }
+static Vec2 camToPhoto(const Vec2& c, double aspect) { return Vec2(c.x / aspect + 0.5, 0.5 - c.y); }
+
+// intersection of the lines through a0-a1 and b0-b1 (camera-plane coordinates)
+static bool meet(const Vec2& a0, const Vec2& a1, const Vec2& b0, const Vec2& b1, Vec2& out) {
+    Vec3 la = Vec3(a0.x, a0.y, 1).cross(Vec3(a1.x, a1.y, 1));
+    Vec3 lb = Vec3(b0.x, b0.y, 1).cross(Vec3(b1.x, b1.y, 1));
+    Vec3 v = la.cross(lb);
+    // nearly parallel lines meet absurdly far away: treat as parallel
+    if (std::abs(v.z) < 1e-9 || std::hypot(v.x, v.y) > std::abs(v.z) * 1e4) return false;
+    out = Vec2(v.x / v.z, v.y / v.z);
+    return true;
+}
+
+static bool vanishing(const MatchPhoto& p, double aspect, Vec2& v1, Vec2& v2) {
+    auto c = [&](const Vec2& q) { return photoToCam(q, aspect); };
+    return meet(c(p.lines[0][0]), c(p.lines[0][1]), c(p.lines[1][0]), c(p.lines[1][1]), v1) &&
+           meet(c(p.lines[2][0]), c(p.lines[2][1]), c(p.lines[3][0]), c(p.lines[3][1]), v2);
+}
+
+bool matchPhotoVanishing(const MatchPhoto& p, double aspect, Vec2& red, Vec2& green) {
+    Vec2 a, b;
+    if (!vanishing(p, aspect, a, b)) return false;
+    red = camToPhoto(a, aspect);
+    green = camToPhoto(b, aspect);
+    return true;
+}
+
+bool solveMatchPhoto(const MatchPhoto& p, double aspect, CameraState& out, QString* why) {
+    Vec2 v1, v2;
+    if (!vanishing(p, aspect, v1, v2)) {
+        if (why) *why = "A pair of lines is parallel; tilt them to follow edges that recede.";
+        return false;
+    }
+    double f2 = -(v1.x * v2.x + v1.y * v2.y);
+    if (f2 <= 1e-6) {
+        if (why) *why = "The red and green lines meet on the same side; put each pair on edges that run along one axis.";
+        return false;
+    }
+    double f = std::sqrt(f2);   // focal length in picture heights
+    // world axes seen from the camera (x right, y up, z towards the viewer: right-handed)
+    Vec3 a1 = Vec3(v1.x, v1.y, -f).normalized();
+    Vec3 a2 = Vec3(v2.x, v2.y, -f).normalized();
+    a2 = (a2 - a1 * a1.dot(a2)).normalized();
+    Vec3 a3 = a1.cross(a2);
+    // The positive red axis is the one heading into the picture; blue points up
+    if (a3.y < 0) { a2 = -a2; a3 = -a3; }
+    if (p.turned) { a1 = -a1; a2 = -a2; }
+    // the camera's axes in the world
+    Vec3 r(a1.x, a2.x, a3.x), u(a1.y, a2.y, a3.y), fw = -Vec3(a1.z, a2.z, a3.z);
+    Vec2 o = photoToCam(p.origin, aspect);
+    Vec3 d = (r * o.x + u * o.y + fw * f).normalized();
+    if (d.z > -1e-6) {
+        if (why) *why = "The origin grip must be below the horizon (the ground is seen from above).";
+        return false;
+    }
+    double t = -std::max(p.eyeHeight, 1.0) / d.z;
+    out.perspective = true;
+    out.twoPoint = false;
+    out.eye = -d * t;
+    out.target = out.eye + fw * t;
+    out.up = u;
+    out.fov = 2 * std::atan(0.5 / f) * 180 / kPi;
+    return true;
+}
+
+const Scene* Model::photoInView() const {
+    if (shownPhoto < 0 || shownPhoto >= (int)scenes.size()) return nullptr;
+    const Scene& sc = scenes[shownPhoto];
+    if (!sc.matchPhoto || sc.photo.image.isEmpty()) return nullptr;
+    const CameraState& a = camera;
+    const CameraState& b = sc.cam;
+    double scale = std::max((b.target - b.eye).length(), 1.0);
+    if (!a.perspective || (a.eye - b.eye).length() > scale * 1e-6 || (a.target - b.target).length() > scale * 1e-6 ||
+        std::abs(a.fov - b.fov) > 1e-6 || (a.up - b.up).length() > 1e-6 || a.twoPoint != b.twoPoint)
+        return nullptr;
+    return &sc;
+}
+
 QImage Material::image() const {
     if (!hasTexture || texturePng.isEmpty()) return QImage();
     return QImage::fromData(texturePng);

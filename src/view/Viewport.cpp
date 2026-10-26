@@ -308,6 +308,24 @@ void Viewport::paintOverlay2D() {
         if (!proj(l.p, s)) continue;
         drawLabelBox(s + QPointF(l.dx, l.dy), l.text, l.c, l.box);
     }
+    for (auto& l : overlay.lines2d) {
+        QPen pen(l.c, l.w);
+        if (l.dashed) pen.setStyle(Qt::DashLine);
+        p.setPen(pen);
+        auto clampP = [](double v) { return std::clamp(v, -1e5, 1e5); };
+        p.drawLine(QPointF(clampP(l.x0), clampP(l.y0)), QPointF(clampP(l.x1), clampP(l.y1)));
+    }
+    for (auto& g : overlay.grips2d) {
+        double h = g.size * 0.5;
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1));
+        p.setBrush(g.hot ? QColor(255, 255, 255) : g.c);
+        p.drawRect(QRectF(g.x - h, g.y - h, g.size, g.size));
+        if (g.hot) {
+            p.setPen(QPen(g.c, 2));
+            p.setBrush(Qt::NoBrush);
+            p.drawRect(QRectF(g.x - h + 1, g.y - h + 1, g.size - 2, g.size - 2));
+        }
+    }
     for (auto& b : overlay.boxes) {
         QPen pen(b.c, 1);
         if (b.dashed) pen.setStyle(Qt::DashLine);
@@ -625,6 +643,7 @@ void Viewport::standardView(int which) {
 void Viewport::setPerspective(bool persp) {
     CameraState& c = *cam.s;
     if (c.perspective == persp) return;
+    if (!persp) c.twoPoint = false;
     double d = cam.distance();
     if (!persp) {
         c.orthoHeight = 2 * d * std::tan(c.fov * kPi / 360);

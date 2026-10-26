@@ -327,6 +327,25 @@ void main() {
 }
 )";
 
+static const char* kPhotoVS = R"(
+#version 330 core
+uniform vec4 uRect;   // x0, y0, x1, y1 in normalized device coordinates
+out vec2 vUv;
+void main() {
+    vec2 k = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+    vUv = k;
+    gl_Position = vec4(mix(uRect.xy, uRect.zw, k), 0.999998, 1.0);
+}
+)";
+
+static const char* kPhotoFS = R"(
+#version 330 core
+in vec2 vUv;
+uniform sampler2D uTex;
+out vec4 oColor;
+void main() { oColor = vec4(texture(uTex, vUv).rgb, 1.0); }
+)";
+
 static const char* kBgFS = R"(
 #version 330 core
 in vec2 vNdc;
@@ -406,6 +425,7 @@ bool Renderer::init(QString* err) {
     if (!build(depthProg_, kFaceVS, nullptr, kDepthFS)) return false;
     if (!build(lineProg_, kLineVS, kLineGS, kLineFS)) return false;
     if (!build(bgProg_, kBgVS, nullptr, kBgFS)) return false;
+    if (!build(photoProg_, kPhotoVS, nullptr, kPhotoFS)) return false;
     if (!build(flatProg_, kFlatVS, nullptr, kFlatFS)) return false;
 
     glGenVertexArrays(1, &dynVao_);
@@ -454,6 +474,7 @@ void Renderer::cleanup() {
     }
     meshes_.clear();
     textures_.clear();
+    photoTex_.reset();
     if (selCache_.vao) { glDeleteVertexArrays(1, &selCache_.vao); glDeleteBuffers(1, &selCache_.vbo); }
     selCache_ = SelCache();
     glDeleteVertexArrays(1, &dynVao_); glDeleteBuffers(1, &dynVbo_);
@@ -913,6 +934,32 @@ void Renderer::drawBackground() {
     glDepthMask(GL_FALSE);
     glBindVertexArray(bgVao_);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+    // a matched photo fills the view's height, centred, while the camera is the one matched to it
+    if (const Scene* sc = D->model.photoInView()) {
+        uint key = qHash(sc->photo.image) ^ (uint)sc->photo.image.size();
+        if (!photoTex_ || key != photoKey_) {
+            QImage img = QImage::fromData(sc->photo.image);
+            photoTex_.reset();
+            if (!img.isNull()) {
+                photoAspect_ = (double)img.width() / std::max(1, img.height());
+                photoTex_ = std::make_unique<QOpenGLTexture>(img.mirrored().convertToFormat(QImage::Format_RGBA8888));
+                photoTex_->setMinificationFilter(QOpenGLTexture::LinearMipMapLinear);
+                photoTex_->setMagnificationFilter(QOpenGLTexture::Linear);
+                photoTex_->setWrapMode(QOpenGLTexture::ClampToEdge);
+                photoTex_->generateMipMaps();
+            }
+            photoKey_ = key;
+        }
+        if (photoTex_) {
+            double hw = photoAspect_ * P->h / std::max(1, P->w);
+            photoProg_.bind();
+            photoProg_.setUniformValue("uRect", QVector4D((float)-hw, -1.0f, (float)hw, 1.0f));
+            photoProg_.setUniformValue("uTex", 0);
+            glActiveTexture(GL_TEXTURE0);
+            photoTex_->bind();
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+    }
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);
 }

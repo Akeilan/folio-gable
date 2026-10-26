@@ -1853,6 +1853,8 @@ void ScenesPanel::applyScene(int i) {
     doc_->model.shadow = s.shadow;
     doc_->model.root.touch();
     for (auto& d : doc_->model.defs) d.ents.touch();
+    // a matched photo shows again once the camera arrives at its scene
+    doc_->model.shownPhoto = s.matchPhoto ? i : -1;
     view_->animateTo(s.cam, 900);
     doc_->notifyChanged();
 }

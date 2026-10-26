@@ -11,7 +11,13 @@ public:
     double nearZ = 10, farZ = 1e6;
 
     void fitClip(const BBox& scene);
-    Mat4 view() const { return Mat4::lookAt(s->eye, s->target, s->up); }
+    Mat4 view() const;
+    // Two-point perspective: the camera is turned level so verticals stay vertical, and the
+    // picture is shifted up or down (like a shift lens) to keep the view where it was aimed.
+    bool twoPoint() const { return s->perspective && s->twoPoint; }
+    double lensShift() const;   // in units of half the view height
+    // the axes the picture is projected along (level ones in two-point perspective)
+    void frame(Vec3& f, Vec3& r, Vec3& u) const;
     Mat4 proj() const;
     Mat4 viewProj() const { return proj() * view(); }
     Vec3 forward() const { return (s->target - s->eye).normalized(); }

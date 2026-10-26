@@ -1135,6 +1135,139 @@ private:
         reset();
     }
 
+    void sMatchPhoto() {
+        begin("two-point perspective and match photo");
+        reset();
+        box(2000, 1500, 1000);
+        CameraState& c = d->model.camera;
+        c.target = Vec3(1000, 750, 200);
+        c.eye = c.target + Vec3(-5000, -6500, 4200);
+        c.up = Vec3(0, 0, 1);
+        settle();
+        auto vx = [&](const Vec3& a, const Vec3& b) { return std::abs(scr(a).x() - scr(b).x()); };
+        double lean = vx(Vec3(2000, 0, 0), Vec3(2000, 0, 1000));
+        check(lean > 3, QString("in three-point perspective verticals lean (%1 px)").arg(lean));
+        QPointF aimed = scr(c.target);
+        act("twopoint");
+        check(c.twoPoint && w->act_["twopoint"]->isChecked(), "Two-Point Perspective turns on");
+        check(vx(Vec3(2000, 0, 0), Vec3(2000, 0, 1000)) < 0.01 && vx(Vec3(0, 0, 0), Vec3(0, 0, 1000)) < 0.01, "verticals are vertical");
+        check(QLineF(scr(c.target), aimed).length() < 1, "the view stays aimed where it was");
+        // what is drawn matches what is picked
+        QPointF fc = scr(Vec3(1000, 0, 500));
+        QImage img = v->grabFramebuffer();
+        QColor fpx = QColor(img.pixel(fc.toPoint()));
+        check(fpx.lightness() < 245 && fpx != d->model.style.background, "the front face is drawn where the camera projects it: " + fpx.name());
+        Ray r = v->cam.ray(fc.x(), fc.y());
+        double t = r.hit(Plane(Vec3(0, -1, 0), Vec3(0, 0, 0)));
+        check(!std::isnan(t) && (r.at(t) - Vec3(1000, 0, 500)).length() < 1, "a ray through a projected point finds it again");
+        clickPx(fc);
+        check(d->sel.size() == 1 && d->sel[0].kind == EntKind::Face, "clicking selects the front face");
+        dragPx(QPointF(300, 300), QPointF(340, 310), {}, Qt::MiddleButton);
+        check(!c.twoPoint && !w->act_["twopoint"]->isChecked(), "orbiting leaves two-point perspective");
+
+        // a photo of the box taken with a known camera
+        CameraState truth;
+        truth.eye = Vec3(-5200, -7300, 1600);
+        truth.target = Vec3(1200, 900, 400);
+        truth.up = Vec3(0, 0, 1);
+        truth.fov = 48;
+        truth.perspective = true;
+        c = truth;
+        d->model.style.showAxes = false;
+        const int PW = 1200, PH = 800;
+        QImage photo = v->renderImage(PW, PH, false).convertToFormat(QImage::Format_RGB32);
+        for (int y = 0; y < 30; ++y)
+            for (int x = 0; x < PW; ++x) photo.setPixel(x, y, 0xffff00ff);   // a magenta band to recognise it by
+        Camera pc;
+        pc.s = &truth;
+        pc.w = PW;
+        pc.h = PH;
+        auto at = [&](const Vec3& p) { double sx, sy; pc.project(p, sx, sy); return Vec2(sx / PW, sy / PH); };
+        QString path = QDir::tempPath() + "/gable-audit-photo.png";
+        photo.save(path);
+        d->model.style.showAxes = true;
+        reset();
+        box(2000, 1500, 1000);
+        int scenes0 = (int)d->model.scenes.size();
+        check(w->newMatchPhoto(path), "New Match Photo starts on the picture");
+        auto* mt = static_cast<MatchPhotoTool*>(v->toolById("matchphoto"));
+        check(v->tool() == mt && mt->isActive() && (int)d->model.scenes.size() == scenes0 + 1 && d->model.scenes.back().matchPhoto,
+              "a match-photo scene is made and its grips are shown");
+        // drag every grip onto the box's edges in the picture
+        Vec2 want[9] = {at(Vec3(300, 0, 0)), at(Vec3(1700, 0, 0)), at(Vec3(300, 0, 1000)), at(Vec3(1700, 0, 1000)),
+                        at(Vec3(0, 300, 0)), at(Vec3(0, 1200, 0)), at(Vec3(0, 300, 1000)), at(Vec3(0, 1200, 1000)), at(Vec3(0, 0, 0))};
+        bool moved = true;
+        for (int k : {8, 0, 1, 2, 3, 4, 5, 6, 7}) {
+            QPointF from = mt->gripScreen(k), to = mt->toScreen(want[k]);
+            dragPx(from, to);
+            moved = moved && QLineF(mt->gripScreen(k), to).length() < 0.01;
+        }
+        check(moved, "each grip follows the mouse");
+        type(formatLength(1600, d->model.units));
+        const MatchPhoto& mp = d->model.scenes.back().photo;
+        check(std::abs(mp.eyeHeight - 1600) < 1e-6, "eye height typed in");
+        check(mt->problem().isEmpty(), "the grips give a camera: " + mt->problem());
+        Vec3 f0 = (truth.target - truth.eye).normalized(), f1 = (c.target - c.eye).normalized();
+        check((c.eye - truth.eye).length() < 5 && f0.dot(f1) > 0.99999 && std::abs(c.fov - truth.fov) < 0.05,
+              QString("the matched camera is the one that took the photo (eye off by %1 mm, fov %2)").arg((c.eye - truth.eye).length(), 0, 'f', 2).arg(c.fov, 0, 'f', 3));
+        // the photo is behind the model
+        settle(100);
+        QImage seen = v->grabFramebuffer();
+        QColor band = QColor(seen.pixel(seen.width() / 2, 8));
+        check(band.red() > 200 && band.green() < 60 && band.blue() > 200, "the photo shows behind the model: " + band.name());
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { w->grab().save(QDir::tempPath() + "/gable-matchphoto.png"); v->grabFramebuffer().save(QDir::tempPath() + "/gable-matchphoto-fb.png"); }
+        // parallel red lines are refused and leave the camera as it was
+        QPointF p2 = mt->toScreen(Vec2(want[0].x, want[0].y + 0.05)), p3 = mt->toScreen(Vec2(want[1].x, want[1].y + 0.05));
+        dragPx(mt->gripScreen(2), p2);
+        CameraState before = c;
+        dragPx(mt->gripScreen(3), p3);
+        (void)before;
+        check(!mt->problem().isEmpty() && std::isfinite(c.eye.x), "parallel lines are refused: " + mt->problem());
+        dragPx(mt->gripScreen(2), mt->toScreen(want[2]));
+        dragPx(mt->gripScreen(3), mt->toScreen(want[3]));
+        check(mt->problem().isEmpty() && (c.eye - truth.eye).length() < 5, "and put back, the match returns");
+        act("matchphoto_turn");
+        check(mp.turned && (c.eye - truth.eye).length() > 1000, "Turn Axes swings the camera round");
+        act("matchphoto_turn");
+        check(!mp.turned && (c.eye - truth.eye).length() < 5, "turning again restores it");
+        key(Qt::Key_Return);
+        check(!mt->isActive() && v->tool()->id() == "select", "Enter finishes");
+        int sc = (int)d->model.scenes.size() - 1;
+        check(d->model.photoInView() == &d->model.scenes[sc], "the photo stays while the camera is the matched one");
+        // modelling over the photo leaves the photo; orbiting hides it, the scene brings it back
+        dragPx(QPointF(400, 400), QPointF(460, 420), {}, Qt::MiddleButton);
+        check(d->model.photoInView() == nullptr, "orbiting away hides the photo");
+        QImage away = v->grabFramebuffer();
+        QColor b2 = QColor(away.pixel(away.width() / 2, 8));
+        check(!(b2.red() > 200 && b2.green() < 60 && b2.blue() > 200), "and it is no longer drawn");
+        w->scenes_->applyScene(sc);
+        settle(1100);
+        check(d->model.photoInView() != nullptr, "going to the scene shows the photo again");
+        // edit again, then cancel: nothing changes
+        act("matchphoto_edit");
+        check(mt->isActive() && mt->scene() == sc, "Edit Matched Photo opens the grips again");
+        dragPx(mt->gripScreen(8), mt->gripScreen(8) + QPointF(30, 10));
+        key(Qt::Key_Escape);
+        check(!mt->isActive() && std::abs(d->model.scenes[sc].photo.origin.x - want[8].x) < 1e-9 && (c.eye - truth.eye).length() < 5,
+              QString("Esc cancels the edit (active %1, origin %2 vs %3, eye off %4)").arg(mt->isActive()).arg(d->model.scenes[sc].photo.origin.x).arg(want[8].x).arg((c.eye - truth.eye).length()));
+        // undo removes the whole match photo; redo brings it back
+        d->undo();
+        settle();
+        check((int)d->model.scenes.size() == scenes0, "undo removes the match photo scene");
+        d->redo();
+        settle();
+        check((int)d->model.scenes.size() == scenes0 + 1 && d->model.scenes.back().matchPhoto, "redo brings it back");
+        // saved with the model
+        Model back;
+        check(loadModel(back, saveModel(d->model)), "model with a matched photo saves and loads");
+        const Scene& bs = back.scenes.back();
+        check(bs.matchPhoto && bs.photo.image == d->model.scenes.back().photo.image && std::abs(bs.photo.eyeHeight - 1600) < 1e-9 &&
+                  std::abs(bs.photo.lines[3][1].x - want[7].x) < 1e-9 && std::abs(bs.photo.origin.y - want[8].y) < 1e-9,
+              "picture and grips round-trip through the file");
+        QFile::remove(path);
+        reset();
+    }
+
     void sTextures() {
         begin("texture: position, reset, rotate, flip, projected, follows moves");
         reset();
@@ -1562,7 +1695,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1593,6 +1726,7 @@ int Auditor::run() {
     sTextures();
     sMaterials();
     sEdgeStyles();
+    sMatchPhoto();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
