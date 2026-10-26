@@ -246,6 +246,12 @@ struct Style {
     bool extension = false;
     bool endpoints = false;
     bool jitter = false;
+    bool halo = false;
+    int extensionLength = 4;   // px past each end
+    int endpointLength = 6;    // px of thicker line at each end
+    int jitterAmount = 2;      // px the extra strokes wander
+    int depthCueWidth = 4;     // px of the nearest edges (the farthest are one pixel)
+    int haloGap = 4;           // px gap where an edge passes behind another
     bool colorByAxis = false;
     bool colorByTag = false;
     QColor edgeColor{0, 0, 0};

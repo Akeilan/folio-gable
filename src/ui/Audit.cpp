@@ -5,6 +5,7 @@
 // model after each step. Prints PASS/FAIL lines and exits with the number of failures.
 #include "core/FileFormats.h"
 #include "core/Geometry.h"
+#include "core/Serializer.h"
 #include "core/Model.h"
 #include "ui/Backstage.h"
 #include "ui/MainWindow.h"
@@ -1006,6 +1007,134 @@ private:
         validate("materials");
     }
 
+    void sEdgeStyles() {
+        begin("edge style settings: extension, endpoints, jitter, depth cue, halo");
+        reset();
+        box(2000, 1500, 1000);
+        Style& st = d->model.style;
+        StylesPanel* sp = w->styles_;
+        st.profiles = false;
+        st.showSky = false;
+        st.showAxes = false;
+        sp->refresh();
+        auto shot = [&] { v->update(); settle(80); return v->grabFramebuffer(); };
+        auto ink = [&](const QImage& img) {
+            int n = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                const QRgb* row = reinterpret_cast<const QRgb*>(img.constScanLine(y));
+                for (int x = 0; x < img.width(); ++x)
+                    if (qGray(row[x]) < 60) ++n;
+            }
+            return n;
+        };
+        QImage baseImg = shot();
+        int base = ink(baseImg);
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) baseImg.save(QDir::tempPath() + "/gable-es-base.png");
+        check(base > 100, QString("plain edges draw (%1 dark pixels)").arg(base));
+        // each setting changes the drawing, more for a larger amount
+        auto measure = [&](QCheckBox* box, QSpinBox* amount, int small, int large, const QString& what) {
+            amount->setValue(small);
+            box->setChecked(true);
+            QImage ai = shot();
+            int a = ink(ai);
+            if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) ai.save(QDir::tempPath() + "/gable-es-" + what + ".png");
+            amount->setValue(large);
+            int b = ink(shot());
+            box->setChecked(false);
+            int c = ink(shot());
+            check(a > base && b > a, QString("%1 adds ink, more when larger (%2 -> %3 -> %4)").arg(what).arg(base).arg(a).arg(b));
+            check(std::abs(c - base) <= base / 50, QString("%1 off restores the plain edges (%2 vs %3)").arg(what).arg(c).arg(base));
+        };
+        measure(sp->extension_, sp->extLen_, 4, 20, "extension");
+        check(st.extensionLength == 20, "extension length is stored in the style");
+        measure(sp->endpoints_, sp->endLen_, 4, 16, "endpoints");
+        measure(sp->jitter_, sp->jitterAmt_, 1, 6, "jitter");
+        measure(sp->depthCue_, sp->cueW_, 3, 8, "depth cue");
+        sp->jitter_->setChecked(true);
+        QImage j1 = shot(), j2 = shot();
+        check(j1 == j2, "jitter is the same on every redraw");
+        sp->jitter_->setChecked(false);
+        // depth cue: the nearest corner's edges are wider than the farthest
+        sp->depthCue_->setChecked(true);
+        sp->cueW_->setValue(9);
+        QImage cue = shot();
+        auto widthAt = [&](const QImage& img, const Vec3& a, const Vec3& b) {
+            // dark run across the edge at its midpoint
+            QPointF pa = scr(a), pb = scr(b), m = (pa + pb) / 2;
+            QPointF dir = pb - pa;
+            double L = std::hypot(dir.x(), dir.y());
+            QPointF nrm(-dir.y() / L, dir.x() / L);
+            int n = 0;
+            for (int k = -15; k <= 15; ++k) {
+                QPoint q = (m + nrm * k).toPoint();
+                if (img.rect().contains(q) && qGray(img.pixel(q)) < 60) ++n;
+            }
+            return n;
+        };
+        int nearW = widthAt(cue, Vec3(0, 0, 1000), Vec3(2000, 0, 1000));
+        int farW = widthAt(cue, Vec3(2000, 1500, 0), Vec3(2000, 1500, 1000));
+        (void)farW;
+        int nearPlain = widthAt(shot(), Vec3(0, 0, 1000), Vec3(2000, 0, 1000));
+        sp->depthCue_->setChecked(false);
+        nearPlain = widthAt(shot(), Vec3(0, 0, 1000), Vec3(2000, 0, 1000));
+        check(nearW >= nearPlain + 3, QString("depth cue widens the near edges (%1 px vs %2 px)").arg(nearW).arg(nearPlain));
+        // halo: a line passing behind another is broken around the crossing
+        reset();
+        Style& s2 = d->model.style;
+        s2.showSky = false;
+        s2.showAxes = false;
+        s2.profiles = false;
+        geom::addLine(d->model.root, Vec3(0, 0, 500), Vec3(2000, 0, 500));
+        geom::addLine(d->model.root, Vec3(1000, 3000, 0), Vec3(1000, 3000, 1000));
+        d->model.root.touch();
+        d->notifyChanged();
+        for (bool persp : {false, true}) {
+            CameraState& c = d->model.camera;
+            c.perspective = persp;
+            c.target = Vec3(1000, 1500, 500);
+            c.eye = c.target + Vec3(0, -9000, 0);
+            c.up = Vec3(0, 0, 1);
+            c.orthoHeight = 3000;
+            sp = w->styles_;
+            sp->refresh();
+            sp->halo_->setChecked(false);
+            QImage plain = shot();
+            if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) plain.save(QDir::tempPath() + QString("/gable-plain-%1.png").arg(persp));
+            QPointF cross = scr(Vec3(1000, 3000, 500));
+            QPointF crossNear = scr(Vec3(1000, 0, 500));
+            // a few pixels above the near line, on the far line
+            QPoint probe(qRound(cross.x()), qRound(crossNear.y()) - 3);
+            QPoint farProbe(qRound(cross.x()), qRound(scr(Vec3(1000, 3000, 900)).y()));
+            bool darkBefore = qGray(plain.pixel(probe)) < 170;
+            sp->haloGap_->setValue(6);
+            sp->halo_->setChecked(true);
+            QImage haloed = shot();
+            QString cam = persp ? "perspective" : "parallel";
+            check(darkBefore, cam + ": the far line shows next to the crossing without halo");
+            check(qGray(haloed.pixel(probe)) > 230, cam + ": halo breaks the far line where it passes behind");
+            check(qGray(haloed.pixel(farProbe)) < 170, cam + ": the far line still shows away from the crossing");
+            QPoint nearProbe(qRound(crossNear.x()) + 40, qRound(crossNear.y()));
+            check(qGray(haloed.pixel(nearProbe)) < 170, cam + ": the near line is whole");
+            if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) haloed.save(QDir::tempPath() + QString("/gable-halo-%1.png").arg(cam));
+            sp->halo_->setChecked(false);
+        }
+        // saved with the model
+        s2.halo = true; s2.haloGap = 7; s2.jitter = true; s2.jitterAmount = 3; s2.endpoints = true; s2.endpointLength = 9;
+        s2.depthCue = true; s2.depthCueWidth = 5; s2.extension = true; s2.extensionLength = 11;
+        Model back;
+        check(loadModel(back, saveModel(d->model)), "model with edge settings saves and loads");
+        const Style& b = back.style;
+        check(b.halo && b.haloGap == 7 && b.jitter && b.jitterAmount == 3 && b.endpoints && b.endpointLength == 9 && b.depthCue &&
+                  b.depthCueWidth == 5 && b.extension && b.extensionLength == 11,
+              "every edge setting round-trips through the file");
+        // the sketchy preset turns several on
+        sp->preset_->setCurrentIndex(8);
+        settle();
+        check(d->model.style.jitter && d->model.style.endpoints && d->model.style.halo && sp->jitter_->isChecked(), "Sketchy Profiles preset sets jitter, endpoints and halo");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { reset(); box(2000, 1500, 1000); sp->preset_->setCurrentIndex(1); sp->preset_->setCurrentIndex(8); settle(200); w->grab().save(QDir::tempPath() + "/gable-sketchy.png"); w->tray_->showPanel("Styles"); settle(300); w->grab().save(QDir::tempPath() + "/gable-styles-panel.png"); }
+        reset();
+    }
+
     void sTextures() {
         begin("texture: position, reset, rotate, flip, projected, follows moves");
         reset();
@@ -1433,7 +1562,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1463,6 +1592,7 @@ int Auditor::run() {
     sOrbit();
     sTextures();
     sMaterials();
+    sEdgeStyles();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();

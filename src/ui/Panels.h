@@ -165,7 +165,11 @@ private:
     QComboBox* faceStyle_;
     QCheckBox *edges_, *profiles_, *backEdges_, *xray_, *extension_, *sky_, *ground_, *byAxis_, *byTag_, *guides_, *axes_;
     QSpinBox* profileW_;
+    // edge effects, each with its amount in pixels
+    QCheckBox *endpoints_, *jitter_, *depthCue_, *halo_;
+    QSpinBox *extLen_, *endLen_, *jitterAmt_, *cueW_, *haloGap_;
     ColorButton *bg_, *skyC_, *groundC_, *front_, *back_, *edgeC_;
+    friend class Auditor;
 };
 
 class TagsPanel : public QWidget {

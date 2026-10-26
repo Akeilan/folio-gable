@@ -157,7 +157,7 @@ void main() {
 static const char* kLineGS = R"(
 #version 330 core
 layout(lines) in;
-layout(triangle_strip, max_vertices = 4) out;
+layout(triangle_strip, max_vertices = 20) out;
 in VS { vec4 col; vec3 n1; vec3 n2; float flags; vec3 w; float clip; } gi[];
 uniform vec2 uViewport;
 uniform float uWidth;
@@ -172,17 +172,76 @@ uniform vec4 uColor;
 uniform float uFade;
 uniform float uDepthBias;
 uniform float uNear;
+// edge style: endpoint length, jitter amount, depth cue (max width, near, far), all in px / model depth
+uniform float uEndLen;
+uniform float uJitter;
+uniform vec3 uCue;
+// halo: widen every edge by uHaloGap on each side and push it back (depth only)
+uniform float uHaloGap;
+uniform vec3 uHaloPush;   // x: relative push (perspective), y, z: near and far planes
+uniform float uHaloOrtho; // NDC push when orthographic
 out vec4 fCol;
 noperspective out float fDist;
+
+vec4 P0, P1;
+float C0, C1, LEN;
+vec2 S0, S1, DIR, HALF;
+vec4 COL;
+
+float hash(vec3 p) {
+    p = fract(p * 0.0137 + vec3(0.31, 0.17, 0.73));
+    p += dot(p, p.yzx + 19.19);
+    return fract((p.x + p.y) * p.z);
+}
+
+// sp lies at screen fraction s along the edge (outside 0..1 when extended); depth and clip
+// distance come from the matching point of the 3D edge, so long extensions keep correct depth
+void corner(vec2 sp, float s, float dist) {
+    float den = (1.0 - s) * P1.w + s * P0.w;
+    float t = abs(den) > 1e-9 ? s * P0.w / den : s;
+    t = clamp(t, -4.0, 5.0);
+    vec4 p = mix(P0, P1, t);
+    float zb = p.z - uDepthBias * p.w;
+    if (uHaloGap > 0.0) {
+        if (uOrtho) zb += uHaloOrtho * p.w;
+        else {
+            float n = uHaloPush.y, f = uHaloPush.z;
+            float de = p.w * (1.0 + uHaloPush.x);
+            zb = ((f + n) / (f - n) - 2.0 * f * n / ((f - n) * de)) * p.w;
+        }
+    }
+    gl_Position = vec4(sp / HALF * p.w, zb, p.w);
+    gl_ClipDistance[0] = mix(C0, C1, t);
+    fCol = COL;
+    fDist = dist;
+    EmitVertex();
+}
+
+// a stroke from fraction t0 to t1 of the edge, moved sideways by off px, its ends pushed out by e0/e1 px
+void stroke(float t0, float t1, float off, float wid, float e0, float e1) {
+    vec2 nrm = vec2(-DIR.y, DIR.x);
+    vec2 a = mix(S0, S1, t0) + nrm * off - DIR * e0;
+    vec2 b = mix(S0, S1, t1) + nrm * off + DIR * e1;
+    vec2 h = nrm * (wid * 0.5);
+    float L = max(LEN, 1e-6);
+    float s0 = t0 - e0 / L, s1 = t1 + e1 / L;
+    corner(a + h, s0, t0 * LEN - e0);
+    corner(a - h, s0, t0 * LEN - e0);
+    corner(b + h, s1, t1 * LEN + e1);
+    corner(b - h, s1, t1 * LEN + e1);
+    EndPrimitive();
+}
+
 void main() {
     int f = int(gi[0].flags + 0.5);
     bool soft = (f & 4) != 0;
     if (uMode == 0 && soft) return;
     if (uMode == 2 && !soft) return;
     float width = uWidth;
+    bool prof = false;
     if (uMode == 1 || uMode == 3) {
         if (soft) return;
-        bool prof = (f & 1) != 0;
+        prof = (f & 1) != 0;
         if ((f & 2) != 0) {
             vec3 mid = (gi[0].w + gi[1].w) * 0.5;
             vec3 V = uOrtho ? -uViewDir : (uEye - mid);
@@ -193,42 +252,52 @@ void main() {
         // mode 3: every hard edge in one pass, profiles drawn wider
         if (uMode == 3 && prof) width = uProfileWidth;
     }
-    vec4 p0 = gl_in[0].gl_Position, p1 = gl_in[1].gl_Position;
-    float c0 = gi[0].clip, c1 = gi[1].clip;
+    // depth cue: near edges wide, far ones one pixel (profiles keep their width when wider)
+    if (uCue.x > 0.0 && (uMode == 0 || uMode == 3)) {
+        float de = dot((gi[0].w + gi[1].w) * 0.5 - uEye, uViewDir);
+        float t = clamp((de - uCue.y) / max(uCue.z - uCue.y, 1e-6), 0.0, 1.0);
+        float cw = mix(uCue.x, uWidth, t);
+        width = prof ? max(width, cw) : cw;
+    }
+    P0 = gl_in[0].gl_Position; P1 = gl_in[1].gl_Position;
+    C0 = gi[0].clip; C1 = gi[1].clip;
     float e = max(uNear * 1.001, 1e-4);
-    if (p0.w < e && p1.w < e) return;
-    if (p0.w < e) { float t = (e - p0.w) / (p1.w - p0.w); p0 = mix(p0, p1, t); c0 = mix(c0, c1, t); }
-    else if (p1.w < e) { float t = (e - p1.w) / (p0.w - p1.w); p1 = mix(p1, p0, t); c1 = mix(c1, c0, t); }
-    vec2 s0 = p0.xy / p0.w * uViewport * 0.5;
-    vec2 s1 = p1.xy / p1.w * uViewport * 0.5;
-    vec2 d = s1 - s0;
-    float len = length(d);
-    if (len < 1e-6) { d = vec2(1.0, 0.0); } else { d /= len; }
-    vec2 nrm = vec2(-d.y, d.x) * (width * 0.5);
-    vec2 ext = d * uExt;
-    vec4 col;
-    if (uColorMode == 1) col = gi[0].col;
+    if (P0.w < e && P1.w < e) return;
+    if (P0.w < e) { float t = (e - P0.w) / (P1.w - P0.w); P0 = mix(P0, P1, t); C0 = mix(C0, C1, t); }
+    else if (P1.w < e) { float t = (e - P1.w) / (P0.w - P1.w); P1 = mix(P1, P0, t); C1 = mix(C1, C0, t); }
+    HALF = uViewport * 0.5;
+    S0 = P0.xy / P0.w * HALF;
+    S1 = P1.xy / P1.w * HALF;
+    vec2 d = S1 - S0;
+    LEN = length(d);
+    DIR = LEN < 1e-6 ? vec2(1.0, 0.0) : d / LEN;
+    if (uColorMode == 1) COL = gi[0].col;
     else if (uColorMode == 2) {
         vec3 dir = normalize(gi[1].w - gi[0].w);
-        if (abs(dir.x) > 0.9999) col = vec4(0.85, 0.1, 0.1, 1.0);
-        else if (abs(dir.y) > 0.9999) col = vec4(0.1, 0.65, 0.1, 1.0);
-        else if (abs(dir.z) > 0.9999) col = vec4(0.1, 0.2, 0.9, 1.0);
-        else col = uColor;
-    } else col = uColor;
-    col.rgb = mix(col.rgb, vec3(1.0), uFade);
-    vec2 halfVp = uViewport * 0.5;
-    vec2 corners[4] = vec2[4](s0 - ext + nrm, s0 - ext - nrm, s1 + ext + nrm, s1 + ext - nrm);
-    float dists[4] = float[4](-uExt, -uExt, len + uExt, len + uExt);
-    for (int i = 0; i < 4; ++i) {
-        vec4 p = (i < 2) ? p0 : p1;
-        float zb = p.z - uDepthBias * p.w;
-        gl_Position = vec4(corners[i] / halfVp * p.w, zb, p.w);
-        gl_ClipDistance[0] = (i < 2) ? c0 : c1;
-        fCol = col;
-        fDist = dists[i];
-        EmitVertex();
+        if (abs(dir.x) > 0.9999) COL = vec4(0.85, 0.1, 0.1, 1.0);
+        else if (abs(dir.y) > 0.9999) COL = vec4(0.1, 0.65, 0.1, 1.0);
+        else if (abs(dir.z) > 0.9999) COL = vec4(0.1, 0.2, 0.9, 1.0);
+        else COL = uColor;
+    } else COL = uColor;
+    COL.rgb = mix(COL.rgb, vec3(1.0), uFade);
+    if (uHaloGap > 0.0) width += 2.0 * uHaloGap;
+    stroke(0.0, 1.0, 0.0, width, uExt, uExt);
+    // endpoints: the line thickens over its last few pixels at each end
+    if (uEndLen > 0.0 && LEN > 1.0) {
+        float t = min(uEndLen / LEN, 0.5);
+        float w2 = width + max(uWidth, 1.0) * 1.5;
+        stroke(0.0, t, 0.0, w2, 0.0, 0.0);
+        stroke(1.0 - t, 1.0, 0.0, w2, 0.0, 0.0);
     }
-    EndPrimitive();
+    // jitter: two more strokes wandering a little off the line, the same for this edge every frame
+    if (uJitter > 0.0 && LEN > 1.0) {
+        vec3 k = gi[0].w + gi[1].w * 1.618;
+        for (int i = 0; i < 2; ++i) {
+            float r1 = hash(k + float(i) * 17.0), r2 = hash(k * 1.3 + float(i) * 5.0), r3 = hash(k * 0.7 - float(i) * 3.0);
+            float off = (r1 * 2.0 - 1.0) * uJitter;
+            stroke(0.0, 1.0, off, max(uWidth, 1.0), (r2 - 0.3) * uJitter * 2.0, (r3 - 0.3) * uJitter * 2.0);
+        }
+    }
 }
 )";
 
@@ -997,6 +1066,10 @@ void Renderer::setLineUniforms(float width, int dash, int mode, const Mat4& mode
     lineProg_.setUniformValue("uFade", 0.0f);
     lineProg_.setUniformValue("uDepthBias", 0.0f);
     lineProg_.setUniformValue("uNear", P->cam->s->perspective ? (float)P->cam->nearZ : 0.0f);
+    lineProg_.setUniformValue("uEndLen", 0.0f);
+    lineProg_.setUniformValue("uJitter", 0.0f);
+    lineProg_.setUniformValue("uCue", QVector3D(0, 0, 1));
+    lineProg_.setUniformValue("uHaloGap", 0.0f);
 }
 
 void Renderer::drawEdges(const std::vector<DrawItem>& items, int mode, float width, const QColor& col, int dash, bool backEdges) {
@@ -1010,8 +1083,17 @@ void Renderer::drawEdges(const std::vector<DrawItem>& items, int mode, float wid
         int cm = st.colorByAxis ? 2 : (st.colorByTag ? 1 : 0);
         lineProg_.setUniformValue("uColorMode", backEdges ? 0 : cm);
         lineProg_.setUniformValue("uFade", it.faded ? 0.6f : 0.0f);
-        lineProg_.setUniformValue("uExt", st.extension && (mode == 0 || mode == 3) ? (float)(4 * P->dpr) : 0.0f);
-        lineProg_.setUniformValue("uDepthBias", mode == 1 ? 0.0f : 0.0f);
+        // the sketch effects belong to the visible edges, not to hidden or back edges
+        const bool styled = !backEdges && (mode == 0 || mode == 1 || mode == 3);
+        lineProg_.setUniformValue("uExt", styled && mode != 1 && st.extension ? (float)(st.extensionLength * P->dpr) : 0.0f);
+        lineProg_.setUniformValue("uEndLen", styled && st.endpoints ? (float)(st.endpointLength * P->dpr) : 0.0f);
+        lineProg_.setUniformValue("uJitter", styled && st.jitter ? (float)(st.jitterAmount * P->dpr) : 0.0f);
+        lineProg_.setUniformValue("uCue", styled && st.depthCue ? QVector3D((float)(st.depthCueWidth * P->dpr), cueNear_, cueFar_) : QVector3D(0, 0, 1));
+        if (haloPass_) {
+            lineProg_.setUniformValue("uHaloGap", (float)(st.haloGap * P->dpr));
+            lineProg_.setUniformValue("uHaloPush", QVector3D(0.015f, (float)P->cam->nearZ, (float)P->cam->farZ));
+            lineProg_.setUniformValue("uHaloOrtho", haloOrtho_);
+        }
         glBindVertexArray(M.vaoE);
         glDrawArrays(GL_LINES, 0, M.nEdgeVerts);
     }
@@ -1434,14 +1516,54 @@ void Renderer::render(const Params& p) {
     // Edges
     const bool wantEdges = st.edges || st.faceStyle == FaceStyle::Wireframe;
     const bool wantProfiles = st.profiles && st.faceStyle != FaceStyle::Wireframe;
-    if (wantEdges && wantProfiles) {
-        // one pass over the edge buffers instead of two
-        lineProg_.bind();
-        lineProg_.setUniformValue("uProfileWidth", (float)(st.profileWidth * P->dpr));
-        drawEdges(items, 3, 1.0f, st.edgeColor, 0, false);
-    } else if (wantEdges) drawEdges(items, 0, 1.0f, st.edgeColor, 0, false);
+    // depth cue runs from the nearest to the farthest point of the model
+    cueNear_ = 0;
+    cueFar_ = 1;
+    if (st.depthCue && scene.valid()) {
+        Vec3 f = cam.forward();
+        double lo = 1e300, hi = -1e300;
+        for (int k = 0; k < 8; ++k) {
+            Vec3 c((k & 1) ? scene.hi.x : scene.lo.x, (k & 2) ? scene.hi.y : scene.lo.y, (k & 4) ? scene.hi.z : scene.lo.z);
+            double de = (c - cam.s->eye).dot(f);
+            lo = std::min(lo, de);
+            hi = std::max(hi, de);
+        }
+        cueNear_ = (float)std::max(lo, 0.0);
+        cueFar_ = (float)std::max(hi, cueNear_ + 1.0);
+    }
+    auto visibleEdges = [&] {
+        if (wantEdges && wantProfiles) {
+            // one pass over the edge buffers instead of two
+            lineProg_.bind();
+            lineProg_.setUniformValue("uProfileWidth", (float)(st.profileWidth * P->dpr));
+            drawEdges(items, 3, 1.0f, st.edgeColor, 0, false);
+        } else if (wantEdges) drawEdges(items, 0, 1.0f, st.edgeColor, 0, false);
+        if (wantProfiles && !wantEdges) drawEdges(items, 1, (float)st.profileWidth, st.edgeColor, 0, false);
+    };
+    const bool halo = st.halo && st.haloGap > 0 && (wantEdges || wantProfiles);
+    if (halo) {
+        // Halo: every edge first writes a wider band of depth slightly behind itself, so an edge
+        // passing behind it is broken there while edges meeting it at a corner still join.
+        haloPass_ = true;
+        haloOrtho_ = cam.s->perspective ? 0.0f : (float)(std::max(scene.valid() ? scene.radius() : 1000.0, 1.0) * 0.03 / cam.farZ);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        visibleEdges();
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        haloPass_ = false;
+    }
+    visibleEdges();
+    if (halo) {
+        // put back the depth the faces had, for what is drawn after (transparent faces, selection)
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(1.0f, 2.0f);
+        if (!st.xray) drawFaces(items, false, false);
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        visibleEdges();   // depth only: their colour is already drawn, gaps included
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
     if (st.showHidden) drawEdges(items, 2, 1.0f, QColor(110, 110, 110), 2, false);
-    if (wantProfiles && !wantEdges) drawEdges(items, 1, (float)st.profileWidth, st.edgeColor, 0, false);
     if (st.backEdges && !st.xray && st.faceStyle != FaceStyle::Wireframe) {
         glDepthFunc(GL_GREATER);
         glDepthMask(GL_FALSE);
