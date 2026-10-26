@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Gable VERSION 2.3.1 LANGUAGES CXX)
+project(Gable VERSION 2.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ add_library(gablecore STATIC
   src/core/FileFormats.cpp
   src/core/Solids.cpp
   src/core/Sandbox.cpp
+  src/core/Dynamic.cpp
 )
 target_include_directories(gablecore PUBLIC src)
 target_link_libraries(gablecore PUBLIC Qt6::Core Qt6::Gui Qt6::Xml OpenGL::GLU)

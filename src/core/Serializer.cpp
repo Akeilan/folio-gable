@@ -7,7 +7,7 @@
 namespace gable {
 
 static const quint32 kMagic = 0x4742414C;  // "GBAL"
-static const quint32 kVersion = 6;   // 4: texture mappings carry the "projected" flag; 5: edge style settings; 6: matched photos
+static const quint32 kVersion = 7;   // 4: texture mappings carry the "projected" flag; 5: edge style settings; 6: matched photos; 7: dynamic components
 static quint32 gReadVersion = kVersion;
 
 static QDataStream& operator<<(QDataStream& s, const Vec3& v) { return s << v.x << v.y << v.z; }
@@ -16,6 +16,28 @@ static QDataStream& operator<<(QDataStream& s, const Plane& p) { return s << p.n
 static QDataStream& operator>>(QDataStream& s, Plane& p) { return s >> p.n >> p.d; }
 static QDataStream& operator<<(QDataStream& s, const Mat4& m) { for (double d : m.m) s << d; return s; }
 static QDataStream& operator>>(QDataStream& s, Mat4& m) { for (double& d : m.m) s >> d; return s; }
+static void writeAttrs(QDataStream& s, const std::vector<DynAttr>& a) {
+    s << (quint32)a.size();
+    for (auto& x : a) {
+        s << x.name << x.formula << x.value << x.label << x.units << (qint32)x.access << (quint32)x.options.size();
+        for (auto& o : x.options) s << o.first << o.second;
+    }
+}
+static void readAttrs(QDataStream& s, std::vector<DynAttr>& a) {
+    quint32 n;
+    s >> n;
+    if (n > 100000) { s.setStatus(QDataStream::ReadCorruptData); return; }
+    a.resize(n);
+    for (auto& x : a) {
+        qint32 acc;
+        quint32 no;
+        s >> x.name >> x.formula >> x.value >> x.label >> x.units >> acc >> no;
+        x.access = acc;
+        if (no > 100000) { s.setStatus(QDataStream::ReadCorruptData); return; }
+        x.options.resize(no);
+        for (auto& o : x.options) s >> o.first >> o.second;
+    }
+}
 static QDataStream& operator<<(QDataStream& s, const TexMap& t) { return s << t.custom << t.uAxis << t.vAxis << t.uOff << t.vOff << t.projected; }
 static QDataStream& operator>>(QDataStream& s, TexMap& t) {
     s >> t.custom >> t.uAxis >> t.vAxis >> t.uOff >> t.vOff;
@@ -68,7 +90,11 @@ void compactEntities(Entities& E) {
         N.faces.push_back(nf);
         N.linkFace(fm[i]);
     }
-    for (auto& x : E.insts) if (x.alive) N.insts.push_back(x);
+    std::vector<int> im(E.insts.size(), -1);
+    for (size_t i = 0; i < E.insts.size(); ++i)
+        if (E.insts[i].alive) { im[i] = (int)N.insts.size(); N.insts.push_back(E.insts[i]); }
+    for (auto& x : N.insts)
+        if (x.copyOf >= 0) x.copyOf = x.copyOf < (int)im.size() ? im[x.copyOf] : -1;
     for (auto& x : E.guides) if (x.alive) N.guides.push_back(x);
     for (auto& x : E.dims) if (x.alive) N.dims.push_back(x);
     for (auto& x : E.texts) if (x.alive) N.texts.push_back(x);
@@ -98,7 +124,11 @@ static void writeEntities(QDataStream& s, const Entities& in) {
     }
     s << (quint32)E.insts.size();
     for (auto& i : E.insts)
+    {
         s << (qint32)i.def << i.xf << i.name << (qint32)i.tag << (qint32)i.material << i.hidden << i.locked;
+        writeAttrs(s, i.attrs);
+        s << (qint32)i.copyOf << (qint32)i.copyIndex;
+    }
     s << (quint32)E.guides.size();
     for (auto& g : E.guides) s << g.isPoint << g.p << g.dir << g.hidden << (qint32)g.tag;
     s << (quint32)E.dims.size();
@@ -155,6 +185,12 @@ static bool readEntities(QDataStream& s, Entities& E, quint32 version) {
         qint32 def, tag, mat;
         s >> def >> in.xf >> in.name >> tag >> mat >> in.hidden >> in.locked;
         in.def = def; in.tag = tag; in.material = mat;
+        if (version >= 7) {
+            readAttrs(s, in.attrs);
+            qint32 co, ci;
+            s >> co >> ci;
+            in.copyOf = co; in.copyIndex = ci;
+        }
     }
     s >> n;
     E.guides.resize(n);
@@ -253,6 +289,7 @@ QByteArray saveModel(const Model& m, bool compress) {
             const ComponentDef& d = m.defs[i];
             if (!d.alive) continue;
             s << d.name << d.description << d.isGroup << d.alwaysFaceCamera << d.glue << d.cutsOpening;
+            writeAttrs(s, d.attrs);
             writeEntities(s, remapInsts(d.ents));
         }
         writeEntities(s, remapInsts(m.root));
@@ -317,6 +354,7 @@ bool loadModel(Model& m, const QByteArray& dataIn, QString* error) {
     nm.defs.resize(n);
     for (auto& d : nm.defs) {
         s >> d.name >> d.description >> d.isGroup >> d.alwaysFaceCamera >> d.glue >> d.cutsOpening;
+        if (version >= 7) readAttrs(s, d.attrs);
         if (!readEntities(s, d.ents, version)) { if (error) *error = "Corrupt component definition."; return false; }
     }
     if (!readEntities(s, nm.root, version)) { if (error) *error = "Corrupt model geometry."; return false; }

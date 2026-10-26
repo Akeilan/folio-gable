@@ -1077,6 +1077,54 @@ def _(ic):
     arrow(ic, 26, 2, 21, 9, color=ACCD, head=3)
 
 
+@icon("interact")
+def _(ic):
+    box(ic, 3, 13, 13, 13, 6)
+    # pointing hand: arrow cursor with a click burst
+    ic.poly([(17, 11), (17, 28), (21, 24), (24, 30), (26.5, 29), (23.5, 23), (29, 23)], fill=WHITE, width=1.2)
+    for a in (200, 245, 290):
+        r = math.radians(a)
+        ic.line(17 + 3 * math.cos(r), 11 + 3 * math.sin(r), 17 + 6.5 * math.cos(r), 11 + 6.5 * math.sin(r), stroke=ACC, width=1.4)
+
+
+@icon("componentoptions")
+def _(ic):
+    ic.rect(10.5, 4.5, 18, 23, fill=WHITE)
+    for i, y in enumerate((10, 16, 22)):
+        ic.line(13, y, 18, y, stroke=GRAY)
+        ic.rect(20, y - 2, 6, 4, fill=TINT, stroke=ACCD, width=0.8)
+    box(ic, 2, 17, 9, 9, 4)
+
+
+@icon("componentattributes")
+def _(ic):
+    ic.rect(10.5, 4.5, 18, 23, fill=WHITE)
+    ic.text(19.5, 15, "fx", size=9, fill=ACCD, family="serif", weight="bold")
+    ic.line(13, 20, 26, 20, stroke=GRAY)
+    ic.line(13, 24, 22, 24, stroke=GRAY)
+    box(ic, 2, 17, 9, 9, 4)
+
+
+@icon("extensions")
+def _(ic):
+    ic.path("M6 11 H12 A3 3 0 1 1 18 11 H24 V17 A3 3 0 1 1 24 23 V27 H6 Z", fill=TINT, width=1.2)
+
+
+@icon("rubyconsole")
+def _(ic):
+    ic.rect(3.5, 6.5, 25, 19, fill="#3b3b3b", rx=2)
+    ic.poly([(7, 12), (11, 15), (7, 18)], closed=False, stroke=WHITE, width=1.4)
+    ic.line(13, 19, 19, 19, stroke=WHITE, width=1.4)
+
+
+@icon("sendtolayout")
+def _(ic):
+    ic.rect(9.5, 4.5, 17, 23, fill=WHITE)
+    ic.rect(12, 8, 12, 9, fill=TINT, stroke=GRAY, width=0.8)
+    ic.line(12, 21, 24, 21, stroke=GRAY)
+    arrow(ic, 2, 16, 10, 16, color=ACCD, head=3)
+
+
 def main(out):
     os.makedirs(out, exist_ok=True)
     for name, fn in ICONS.items():

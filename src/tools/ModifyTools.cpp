@@ -1,3 +1,4 @@
+#include "core/Dynamic.h"
 #include <set>
 #include <map>
 #include "core/Geometry.h"
@@ -278,7 +279,11 @@ void TransformTool::commitTransform(const Mat4& worldXf, const QString& name) {
         if (!vs.empty()) geom::transformVertices(E, vs, L, true);
         for (auto& r : targets_) {
             switch (r.kind) {
-            case EntKind::Instance: E.insts[r.id].xf = L * E.insts[r.id].xf; break;
+            case EntKind::Instance:
+                E.insts[r.id].xf = L * E.insts[r.id].xf;
+                // a stretched dynamic component re-lays its parts (a shelf adds boards)
+                if (name == "Scale" && dyn::isDynamic(doc()->model, E.insts[r.id])) dyn::redraw(doc()->model, E, r.id);
+                break;
             case EntKind::Guide: {
                 Guide& g = E.guides[r.id];
                 g.p = L.point(g.p);

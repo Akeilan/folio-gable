@@ -146,10 +146,13 @@ public:
     void refresh();
 signals:
     void placeComponent(int def);
+    void placeSample(int which);
 private:
+    friend class Auditor;
     Document* doc_;
     QListWidget* list_;
     QCheckBox* showGroups_;
+    QComboBox* source_;
 };
 
 class StylesPanel : public QWidget {

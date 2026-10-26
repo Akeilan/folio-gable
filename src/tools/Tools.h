@@ -490,6 +490,38 @@ private:
 // Solid Inspector: shows what stops a group or component from being a solid (holes, stray edges,
 // faces inside, reversed faces, edges shared by several solids, groups inside) and fixes what
 // can be fixed. Works on the selected group, or the group being edited.
+// Interact: clicking a dynamic component runs its onClick (a door swings, a colour changes).
+class InteractTool : public Tool {
+    friend class Auditor;
+public:
+    explicit InteractTool(Viewport* v) : Tool(v) {}
+    ~InteractTool() override;
+    QString id() const override { return "interact"; }
+    QString title() const override { return "Interact"; }
+    void activate() override;
+    void deactivate() override { finish(); }
+    void reset() override { finish(); toSelectTool(); }
+    void mousePress(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    QString status() const override { return status_; }
+    QCursor cursor() const override { return hot_ ? Qt::PointingHandCursor : Qt::ArrowCursor; }
+    bool busy() const override { return timer_ != nullptr; }
+    // Clicks the component under (x, y); false when nothing there reacts to clicks.
+    bool click(double x, double y);
+    void finish();                // ends a running animation at its last frame
+    int animationMs = 450;
+private:
+    bool pathAt(double x, double y, std::vector<int>& path, int& depth) const;
+    void step();
+    bool hot_ = false;
+    QString status_;
+    struct Anim { std::vector<int> path; QString attr; double from, to; };
+    std::vector<Anim> anims_;
+    int top_ = -1;
+    qint64 started_ = 0;
+    class QTimer* timer_ = nullptr;
+};
+
 class SolidInspectorTool : public Tool {
     friend class Auditor;
 public:

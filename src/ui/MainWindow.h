@@ -116,6 +116,10 @@ private:
     void shortcutsHelp();
     void about();
     void solidOp(int op);
+    void notAvailable(const QString& what);
+    void showDynamicDialog(bool attributes);
+    class ComponentOptionsDialog* compOptions_ = nullptr;
+    class ComponentAttributesDialog* compAttrs_ = nullptr;
     void intersect(int mode);
     void reverseFaces();
     // Texture commands on the one selected face (side facing the camera): 0 Position, 1 Reset,

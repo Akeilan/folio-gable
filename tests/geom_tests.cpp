@@ -4,6 +4,7 @@
 #include "core/Solids.h"
 #include "core/FileFormats.h"
 #include "core/Sandbox.h"
+#include "core/Dynamic.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
 #include <QBuffer>
@@ -172,6 +173,162 @@ static void testCylinder() {
     for (auto& e : E.edges) if (e.alive && e.soft) ++soft;
     CHECK(soft == n);
     std::printf("cylinder ok soft=%d\n", soft);
+}
+
+static DynAttr attr(const char* n, const QString& f, const QString& v = QString(), int access = 0) {
+    DynAttr a;
+    a.name = n;
+    a.formula = f;
+    a.value = v;
+    a.access = access;
+    a.units = dyn::defaultUnits(n);
+    return a;
+}
+
+static int alive(const Entities& E) {
+    int n = 0;
+    for (auto& i : E.insts) n += i.alive;
+    return n;
+}
+
+static void testDynamic() {
+    using dyn::Value;
+    // formulas
+    auto calc = [](const QString& f, QString* err = nullptr) {
+        Value v;
+        bool ok = dyn::evaluate(f, [](const QString& r, Value& o, QString&) {
+            if (r.compare("w", Qt::CaseInsensitive) == 0) { o = Value(600.0); return true; }
+            return false;
+        }, v, err);
+        return ok ? v.toText() : QString("ERR");
+    };
+    CHECK(calc("=1+2*3") == "7");
+    CHECK(calc("(1+2)*3") == "9");
+    CHECK(calc("2^3^2") == "64");
+    CHECK(calc("-2^2") == "4");
+    CHECK(calc("W/2 - 18") == "282");
+    CHECK(calc("IF(W>500, \"wide\", \"narrow\")") == "wide");
+    CHECK(calc("\"a\" & 1 + 1 & \"b\"") == "a2b");
+    CHECK(calc("ROUND(SIN(30), 3)") == "0.5");
+    CHECK(calc("MAX(1, W, 3) + MIN(4, 2)") == "602");
+    CHECK(calc("INT(1300/300)") == "4");
+    CHECK(calc("AND(1, 0) + OR(0, 1) + NOT(0)") == "2");
+    CHECK(calc("CHOOSE(2, 10, 20, 30)") == "20");
+    CHECK(calc("CEILING(1234, 100) + FLOOR(1234, 100)") == "2500");
+    CHECK(calc("1/0") == "ERR");
+    CHECK(calc("Height") == "ERR");
+    CHECK(calc("SUM(1,") == "ERR");
+    CHECK(calc("NOSUCH(1)") == "ERR");
+
+    // a shelf: boards as long as the shelf is wide, one more every 300 of height
+    Model m;
+    int board = m.addDef("Board", false), shelf = m.addDef("Shelf", false);
+    box(m.defs[board].ents, 0, 0, 1000, 300, 18);
+    Instance b;
+    b.def = board;
+    b.name = "Board";
+    b.attrs = {attr("LenX", "Parent!LenX"), attr("Z", "COPY*Parent!Spacing"), attr("Copies", "INT(Parent!LenZ/Parent!Spacing)")};
+    m.defs[shelf].ents.insts.push_back(b);
+    Instance s;
+    s.def = shelf;
+    s.attrs = {attr("LenX", "", "800", 2), attr("LenZ", "", "1200", 2), attr("Spacing", "", "300", 1)};
+    m.root.insts.push_back(s);
+    QStringList errs;
+    CHECK(dyn::isDynamic(m, m.root.insts[0]));
+    CHECK(dyn::redraw(m, m.root, 0, &errs));
+    CHECK(errs.isEmpty());
+    const Entities& S = m.defs[m.root.insts[0].def].ents;
+    CHECK(alive(S) == 5);
+    double topZ = 0;
+    for (auto& i : S.insts) if (i.alive) { NEAR(i.xf.axis(0).length(), 0.8, 1e-9); topZ = std::max(topZ, i.xf.origin().z); }
+    NEAR(topZ, 1200, 1e-6);
+    BBox bb = m.entitiesBBox(m.root);
+    NEAR(bb.size().x, 800, 1e-6);
+
+    // shorter: fewer boards; values written back as the formulas' results
+    dyn::find(m.root.insts[0].attrs, "LenZ")->value = "650";
+    CHECK(dyn::redraw(m, m.root, 0));
+    CHECK(alive(m.defs[m.root.insts[0].def].ents) == 3);
+    CHECK(dyn::find(m.defs[m.root.insts[0].def].ents.insts[0].attrs, "Copies")->value == "2");
+
+    // stretching it with the Scale tool becomes its LenX
+    m.root.insts[0].xf = Mat4::scaling(Vec3(1.5, 1, 1));
+    CHECK(dyn::redraw(m, m.root, 0));
+    CHECK(dyn::find(m.root.insts[0].attrs, "LenX")->value == "1200");
+    NEAR(m.root.insts[0].xf.axis(0).length(), 1, 1e-9);
+    NEAR(m.entitiesBBox(m.root).size().x, 1200, 1e-6);
+
+    // a copy of the shelf changed on its own gets a definition of its own
+    m.root.insts.push_back(m.root.insts[0]);
+    m.root.insts[1].xf = Mat4::translation(Vec3(3000, 0, 0));
+    dyn::find(m.root.insts[1].attrs, "LenX")->value = "400";
+    int before = m.root.insts[0].def;
+    CHECK(dyn::redraw(m, m.root, 1));
+    CHECK(m.root.insts[1].def != before && m.root.insts[0].def == before);
+    NEAR(m.defs[before].ents.insts[0].xf.axis(0).length(), 1.2, 1e-9);
+    NEAR(m.defs[m.root.insts[1].def].ents.insts[0].xf.axis(0).length(), 0.4, 1e-9);
+
+    // errors are reported, the rest still applies
+    dyn::find(m.root.insts[1].attrs, "Spacing")->formula = "Spacing*2";
+    errs.clear();
+    CHECK(!dyn::redraw(m, m.root, 1, &errs));
+    CHECK(!errs.isEmpty() && errs.join(" ").contains("refers to itself"));
+
+    // a door that swings
+    Model d;
+    int leaf = d.addDef("Leaf", false), cab = d.addDef("Cabinet", false);
+    box(d.defs[leaf].ents, 0, 0, 500, 20, 800);
+    box(d.defs[cab].ents, 0, 20, 500, 400, 800);
+    Instance l;
+    l.def = leaf;
+    l.name = "Door";
+    l.attrs = {attr("onClick", "", "ANIMATE(\"RotZ\", 0, -90)")};
+    d.defs[cab].ents.insts.push_back(l);
+    Instance c;
+    c.def = cab;
+    d.root.insts.push_back(c);
+    d.root.insts.push_back(c);   // two cabinets: opening one leaves the other shut
+    std::vector<int> path = {0, 0};
+    CHECK(dyn::clickTarget(d, d.root, path) == 1);
+    std::vector<dyn::ClickChange> ch;
+    CHECK(dyn::clickChanges(d, d.root, path, 1, ch));
+    CHECK(ch.size() == 1 && ch[0].animate && ch[0].attr == "RotZ" && std::fabs(ch[0].from.num) < 1e-9 && ch[0].to.num == -90);
+    dyn::makePathUnique(d, d.root, path);
+    CHECK(d.root.insts[0].def != d.root.insts[1].def);
+    dyn::setAttr(d, d.root, ch[0].path, ch[0].attr, ch[0].to);
+    CHECK(dyn::redraw(d, d.root, 0));
+    Vec3 xa = d.defs[d.root.insts[0].def].ents.insts[0].xf.axis(0);
+    NEAR(xa.y, -1, 1e-9);
+    NEAR(d.defs[d.root.insts[1].def].ents.insts[0].xf.axis(0).x, 1, 1e-9);
+    ch.clear();
+    CHECK(dyn::clickChanges(d, d.root, path, 1, ch) && ch.size() == 1 && ch[0].to.num == 0);   // and back
+
+    // SET cycles through text values; child and parent targets
+    Instance& door = d.defs[d.root.insts[0].def].ents.insts[0];
+    door.attrs.push_back(attr("Material", "", "Oak"));
+    d.root.insts[0].attrs = {attr("onClick", "", "SET(\"Door!Material\", \"Oak\", \"Walnut\")")};
+    ch.clear();
+    CHECK(dyn::clickTarget(d, d.root, {0}) == 0);
+    CHECK(dyn::clickChanges(d, d.root, {0}, 0, ch) && ch.size() == 1 && ch[0].to.text == "Walnut" && ch[0].path == std::vector<int>({0, 0}));
+    dyn::setAttr(d, d.root, ch[0].path, ch[0].attr, ch[0].to);
+    errs.clear();
+    CHECK(!dyn::redraw(d, d.root, 0, &errs) && errs.join(" ").contains("Walnut"));   // no such material yet
+    d.addMaterial("Walnut", QColor(90, 60, 40));
+    CHECK(dyn::redraw(d, d.root, 0));
+    CHECK(d.defs[d.root.insts[0].def].ents.insts[0].material == d.findMaterial("Walnut"));
+
+    // saved and read back with attributes and copies
+    Model r;
+    QString err;
+    CHECK(loadModel(r, saveModel(m), &err));
+    CHECK(r.root.insts.size() == 2 && dyn::find(r.root.insts[0].attrs, "LenX") && dyn::find(r.root.insts[0].attrs, "LenX")->access == 2);
+    const Entities& RS = r.defs[r.root.insts[0].def].ents;
+    int copies = 0;
+    for (auto& i : RS.insts) copies += i.alive && i.copyOf >= 0 && RS.insts[i.copyOf].copyOf < 0;
+    CHECK(copies == 2);
+    CHECK(dyn::redraw(r, r.root, 0));
+    CHECK(alive(r.defs[r.root.insts[0].def].ents) == 3);
+    std::printf("dynamic components: ok\n");
 }
 
 static void testSaveLoad() {
@@ -612,6 +769,7 @@ int main(int argc, char** argv) {
     testMatchPhoto();
     testExport3D();
     testSolidRepair();
+    testDynamic();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

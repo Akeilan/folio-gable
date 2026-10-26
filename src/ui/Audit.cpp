@@ -8,6 +8,8 @@
 #include "core/Serializer.h"
 #include "core/Model.h"
 #include "core/Solids.h"
+#include "core/Dynamic.h"
+#include "ui/DynamicDialogs.h"
 #include "ui/Backstage.h"
 #include "ui/MainWindow.h"
 #include "ui/Panels.h"
@@ -43,6 +45,8 @@
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QTimer>
+#include <QGroupBox>
+#include <QLabel>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -1271,6 +1275,195 @@ private:
         reset();
     }
 
+    // parts of the dynamic component E().insts[i] named `name`, alive
+    int parts(int i, const QString& name) {
+        int n = 0;
+        for (auto& c : d->model.defs[E().insts[i].def].ents.insts) n += c.alive && c.name == name;
+        return n;
+    }
+    QString attrValue(const Instance& in, const QString& name) {
+        auto* a = dyn::find(in.attrs, name);
+        return a ? a->value : QString("(none)");
+    }
+
+    void sDynamic() {
+        begin("dynamic components");
+        reset();
+        auto* comps = w->findChild<ComponentsPanel*>();
+        check(comps != nullptr, "Components panel");
+        if (!comps) return;
+        comps->source_->setCurrentIndex(1);
+        settle();
+        check(comps->list_->count() == 3 && comps->list_->item(0)->text() == "Bookshelf" && comps->list_->item(1)->text() == "Door",
+              "the panel offers dynamic samples");
+        check(!comps->showGroups_->isVisible(), "(Show groups is for the model's own list)");
+        emit comps->placeSample(0);
+        settle();
+        check(v->tool() && v->tool()->id() == "place", "choosing one starts placing it");
+        move(Vec3(0, 0, 0));
+        click(Vec3(0, 0, 0));
+        settle();
+        check(insts() == 1 && dyn::isDynamic(d->model, E().insts[0]), "a bookshelf is placed");
+        check(attrValue(E().insts[0], "LenZ") == "1800" && parts(0, "Shelf") == 6, QString("1800 high with 6 shelves (%1)").arg(parts(0, "Shelf")));
+        BBox b = d->model.worldBBox();
+        check(near(b.size().x, 800, 1) && near(b.size().z, 1800, 1), "800 wide, 1800 high");
+        comps->source_->setCurrentIndex(0);
+        settle();
+
+        // Component Options
+        tool("select");
+        d->setSelection({{EntKind::Instance, 0}});
+        act("componentoptions");
+        settle();
+        auto* opt = w->findChild<ComponentOptionsDialog*>();
+        check(opt && opt->isVisible() && opt->title_->text() == "Bookshelf", "Component Options shows the bookshelf: " + (opt ? opt->title_->text() + "/" + opt->empty_->text() : QString("none")));
+        if (!opt) return;
+        auto* height = opt->findChild<QLineEdit*>("opt_LenZ");
+        auto* finish = opt->findChild<QComboBox*>("opt_Finish");
+        auto* spacing = opt->findChild<QComboBox*>("opt_Spacing");
+        check(height && finish && spacing && finish->count() == 3 && spacing->currentText() == "350 mm",
+              "with its options: Height to type, Finish and Shelf spacing to choose");
+        check(opt->summary_->text() == "Freestanding bookshelf", "and a line about it");
+        if (!height || !finish || !spacing) return;
+        height->setText("1000");
+        finish->setCurrentText("Walnut");
+        check(opt->apply(), "Apply");
+        settle();
+        int walnut = d->model.findMaterial("Walnut");
+        bool painted = true;
+        for (auto& c : d->model.defs[E().insts[0].def].ents.insts) if (c.alive) painted &= c.material == walnut;
+        check(parts(0, "Shelf") == 4 && near(d->model.worldBBox().size().z, 1000, 1), QString("a lower bookshelf has fewer shelves (%1)").arg(parts(0, "Shelf")));
+        check(painted, "and every part in the finish chosen");
+        check(d->undoName() == "Component Options", "one undo step");
+        height = opt->findChild<QLineEdit*>("opt_LenX");
+        if (height) height->setText("wide");
+        check(height && !opt->apply() && attrValue(E().insts[0], "LenX") == "800", "a value that isn't a length is refused");
+        d->undo();
+        settle();
+        check(parts(0, "Shelf") == 6, "undo puts the shelves back");
+        d->redo();
+        settle();
+
+        // stretching it with the Scale tool: 1000 high scaled 1.5 times
+        tool("select");
+        d->setSelection({{EntKind::Instance, 0}});
+        tool("scale");
+        Vec3 g(400, 150, 1000);
+        move(g);
+        click(g);
+        move(Vec3(400, 150, 1300));
+        type("1.5");
+        settle();
+        check(attrValue(E().insts[0], "LenZ") == "1500" && parts(0, "Shelf") == 5,
+              QString("the Scale tool makes it taller, with more shelves (height %1, %2 shelves)").arg(attrValue(E().insts[0], "LenZ")).arg(parts(0, "Shelf")));
+        check(near(E().insts[0].xf.axis(2).length(), 1, 1e-9), "not by stretching the boards");
+        key(Qt::Key_Escape);
+
+        // Component Attributes
+        tool("select");
+        d->setSelection({{EntKind::Instance, 0}});
+        act("componentattributes");
+        settle();
+        auto* at = w->findChild<ComponentAttributesDialog*>();
+        check(at && at->isVisible(), "Component Attributes opens");
+        if (!at) return;
+        int sections = 0;
+        for (auto* g2 : at->findChildren<QGroupBox*>()) sections += g2->objectName().startsWith("attr");
+        check(sections == 4, QString("the bookshelf and its 3 parts (%1)").arg(sections));
+        auto* sp = at->findChild<QLineEdit*>("attr_-1_Spacing");
+        check(sp && sp->text() == formatLength(350, d->model.units), "values show in the model's units: " + (sp ? sp->text() : QString()));
+        int shelfPart = -1;
+        const Entities& PD = d->model.defs[E().insts[0].def].ents;
+        for (size_t i = 0; i < PD.insts.size(); ++i) if (PD.insts[i].name == "Shelf" && PD.insts[i].copyOf < 0) shelfPart = (int)i;
+        auto* cp = at->findChild<QLineEdit*>(QString("attr_%1_Copies").arg(shelfPart));
+        check(cp && cp->text().startsWith("=MAX("), "a part's formula shows with its =");
+        check(at->setAttribute(shelfPart, "Copies", "=2"), "type a formula");
+        check(parts(0, "Shelf") == 3, QString("the part follows it (%1 shelves)").arg(parts(0, "Shelf")));
+        QString err;
+        check(!at->setAttribute(-1, "LenX", "=Width +", &err) && !err.isEmpty(), "a formula that doesn't read is refused: " + err);
+        check(at->setAttribute(-1, "Spacing", "=Spacing + 1") && at->lastErrors().join(" ").contains("refers to itself"),
+              "a formula that refers to itself is reported");
+        settle(60);
+        auto* errs = at->findChild<QLabel*>("attrErrors");
+        check(errs && errs->isVisible(), "in the window" + QString(errs ? QString(" (label hidden: %1, parent %2, dlg vis %3, scroll vis %4)").arg(errs->text()).arg(errs->parentWidget() ? errs->parentWidget()->objectName() : "none").arg(at->isVisible()).arg(at->scroll_->isVisible()) : " (no label)"));
+        d->undo();
+        settle();
+        d->setSelection({{EntKind::Instance, 0}});
+        settle();
+        check(at->setAttribute(-1, "Shelves", "4") && at->setOptions(-1, "Shelves", 2, "Number of shelves", "INTEGER", {}),
+              "add a custom attribute users can type");
+        check(at->setAttribute(shelfPart, "Copies", "=Parent!Shelves - 1"), "and use it in a part");
+        check(parts(0, "Shelf") == 4, QString("(%1 shelves)").arg(parts(0, "Shelf")));
+        opt->refresh();
+        auto* ns = opt->findChild<QLineEdit*>("opt_Shelves");
+        check(ns && ns->isVisible(), "it shows in Component Options with its label");
+        if (ns) {
+            ns->setText("7");
+            opt->apply();
+            check(parts(0, "Shelf") == 7, "and changes the bookshelf there");
+        }
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { settle(100); opt->grab().save(QDir::tempPath() + "/gable-dc-options.png"); at->grab().save(QDir::tempPath() + "/gable-dc-attributes.png"); }
+        check(at->removeAttribute(-1, "Shelves") && dyn::find(E().insts[0].attrs, "Shelves") == nullptr, "delete an attribute");
+        check(d->model.defs[E().insts[0].def].attrs.size() == E().insts[0].attrs.size(), "the definition keeps them for new copies");
+        at->hide();
+        opt->hide();
+
+        // a door that opens with Interact
+        int door = dyn::addSample(d->model, 1);
+        d->begin("Door");
+        Instance di;
+        di.def = door;
+        di.attrs = d->model.defs[door].attrs;
+        di.xf = Mat4::translation(Vec3(3000, 0, 0));
+        E().insts.push_back(di);
+        E().touch();
+        d->commit();
+        int di0 = (int)E().insts.size() - 1;
+        act("zoomextents");
+        settle();
+        tool("interact");
+        auto* it = static_cast<InteractTool*>(v->toolById("interact"));
+        Vec3 onLeaf(3000 + 450, 40, 1000);   // the leaf's face toward -y
+        move(onLeaf);
+        check(it->status().contains("Leaf") && v->cursor().shape() == Qt::PointingHandCursor, "pointing at the door: " + it->status());
+        move(Vec3(1500, 150, 300));
+        check(!it->status().contains("Click to operate"), "the bookshelf doesn't react to clicks");
+        int undos = 0;
+        move(onLeaf);
+        click(onLeaf);
+        QElapsedTimer t;
+        t.start();
+        while (it->busy() && t.elapsed() < 3000) settle(20);
+        auto leafOf = [&](int i) -> const Instance& {
+            const Entities& D = d->model.defs[E().insts[i].def].ents;
+            for (auto& c : D.insts) if (c.name == "Leaf") return c;
+            return D.insts[0];
+        };
+        check(attrValue(leafOf(di0), "RotZ") == "90" && near(leafOf(di0).xf.axis(0).y, 1, 1e-6), "a click swings the door open");
+        check(d->undoName() == "Interact", "as one undo step");
+        (void)undos;
+        click(Vec3(3000 - 40, 500, 1000));
+        t.restart();
+        while (it->busy() && t.elapsed() < 3000) settle(20);
+        Vec3 ax = leafOf(di0).xf.axis(0);
+        check(attrValue(leafOf(di0), "RotZ") == "0" && near(ax.x, 1, 1e-6), "another click closes it");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { settle(100); v->grabFramebuffer().save(QDir::tempPath() + "/gable-dynamic.png"); }
+        key(Qt::Key_Escape);
+
+        // kept in the file
+        QString path = QDir::tempPath() + "/gable-dynamic-audit.gable";
+        QString e2;
+        check(d->save(path, &e2), "save");
+        Document d2;
+        check(d2.load(path, &e2) && d2.model.root.insts.size() >= 2 && dyn::find(d2.model.root.insts[0].attrs, "Spacing"), "attributes are saved and read back");
+
+        // out of scope: the buttons stay and say so
+        for (const char* id : {"extensions", "rubyconsole", "sendtolayout"}) check(w->act_.count(id) == 1, QString("%1 is there").arg(id));
+        act("rubyconsole");
+        settle(100);
+        validate("dynamic");
+    }
+
     void sSolidInspector() {
         begin("solid inspector");
         reset();
@@ -1795,7 +1988,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1829,6 +2022,7 @@ int Auditor::run() {
     sMatchPhoto();
     sSolidInspector();
     sCopyView();
+    sDynamic();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
