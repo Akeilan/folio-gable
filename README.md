@@ -6,10 +6,20 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.2.1_amd64.deb
+sudo apt install ./folio-gable_2.3.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
+
+## What's new in 2.3
+
+- **Materials panel › Edit**: change a material's name, colour, opacity, texture picture (load, remove, save) and tile size right in the panel, with the picture's proportions kept unless unlocked; Reset takes the texture's average colour. Each change is one undo step (a slider drag included).
+- **Material collections**: ⋯ › Export materials in model / Save current material write a `.gmat` collection; Import collection adds it to the list beside Colors and Textures, and picking from it adds the material to the model.
+- **Edge style settings** (Styles panel › Effects): profile width, extension length, endpoints, jitter, depth cue and halo, each on or off with its size in pixels, saved with the model and its scenes. The Sketchy Profiles style uses them.
+- **Two-Point Perspective** (Camera tab): verticals stay vertical; orbiting returns to normal perspective.
+- **Match Photo** (Camera tab): pick a photo, drag the two red and two green lines onto edges in it that run along the red and green axes, drag the yellow grip to where the axes meet, type the eye height, and Enter. The camera now matches the photo, which shows behind the model at that scene's camera. Edit Matched Photo moves the grips again; Turn Axes swings red and green round when they point the wrong way.
+- **glTF/GLB and 3MF export**: glTF 2.0 for Blender, game engines and the web (materials, textures, transparency, optional edges); 3MF for printing, one object per solid, with colours.
+- **Solid Inspector** (Solids tab, or Entity Info › Inspect on a group that isn't solid): marks holes, stray edges, faces inside, reversed faces, edges shared by several solids and groups inside, and Enter fixes what it can (fills holes, erases strays and inner faces, turns faces outward).
 
 ## What's new in 2.2
 
@@ -60,7 +70,7 @@ Organizing: groups, components (shared definitions, make unique, glue, cut openi
 Construction: tape measure (guides, resize model), protractor, dimensions (linear, radial), leader and screen text, axes tool, section planes with cut fill.
 Terrain: from contours, from scratch, smoove, drape, add detail, flip edge.
 Display: wireframe, hidden line, shaded, textured, monochrome, X-ray, back edges, profiles, extensions, color by axis/tag, sky and ground, fog, sun shadows by date/time/location.
-Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF and pictures (placed as images or used as textures; dropping a picture on the window places it); export OBJ, STL (watertight check, outward-oriented shells), DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
+Files: native `.gbl`; import OBJ, STL, COLLADA (.dae), DXF and pictures (placed as images or used as textures; dropping a picture on the window places it); export OBJ, STL (watertight check, outward-oriented shells), 3MF, glTF/GLB, DAE, DXF, PNG/JPG at any resolution; print. Auto-save with crash recovery.
 
 `.skp` files cannot be opened (the format is proprietary); export them from SketchUp as COLLADA (.dae) and import that.
 
