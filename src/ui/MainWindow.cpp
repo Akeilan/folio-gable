@@ -191,6 +191,7 @@ void MainWindow::buildTools() {
     view_->registerTool(new FlipEdgeTool(view_));
     view_->registerTool(new DrapeTool(view_));
     view_->registerTool(new ImageTool(view_));
+    view_->registerTool(new TexturePositionTool(view_));
     paint->currentMaterial = [this] { return materials_ ? materials_->current() : -1; };
     paint->sampled = [this](int m) { if (materials_) materials_->setCurrent(m); };
     text->editText = [this](QString& t) {
@@ -288,6 +289,14 @@ void MainWindow::buildActions() {
         doc_->commit();
     });
     addAct("reversefaces", "Reverse Faces", QKeySequence(), [this] { reverseFaces(); });
+    addAct("texposition", "Position Texture", QKeySequence(), [this] { textureCommand(0); });
+    addAct("texreset", "Reset Texture Position", QKeySequence(), [this] { textureCommand(1); });
+    addAct("texprojected", "Projected Texture", QKeySequence(), [this] { textureCommand(2); })->setCheckable(true);
+    addAct("texrot90", "Rotate Texture 90°", QKeySequence(), [this] { textureCommand(3); });
+    addAct("texrot180", "Rotate Texture 180°", QKeySequence(), [this] { textureCommand(4); });
+    addAct("texrot270", "Rotate Texture 270°", QKeySequence(), [this] { textureCommand(5); });
+    addAct("texfliph", "Flip Texture Left/Right", QKeySequence(), [this] { textureCommand(6); });
+    addAct("texflipv", "Flip Texture Up/Down", QKeySequence(), [this] { textureCommand(7); });
     addAct("orientfaces", "Orient Faces", QKeySequence(), [this] { orientFaces(); });
     addAct("intersectmodel", "Intersect With Model", QKeySequence(), [this] { intersect(0); });
     addAct("intersectsel", "Intersect With Selection", QKeySequence(), [this] { intersect(1); });
@@ -1425,6 +1434,21 @@ void MainWindow::contextMenu(const QPoint& at) {
             doc_->model.axesY = z.cross(x).normalized();
             doc_->commit();
         });
+        int tf;
+        bool tback;
+        if (textureTarget(tf, tback)) {
+            const Face& F = doc_->active().faces[tf];
+            int mat = tback ? F.matBack : F.matFront;
+            if (mat >= 0 && mat < (int)doc_->model.materials.size() && doc_->model.materials[mat].hasTexture) {
+                auto* tx = m.addMenu("Texture");
+                tx->addAction(act_["texposition"]);
+                tx->addAction(act_["texreset"]);
+                act_["texprojected"]->setChecked((tback ? F.texBack : F.texFront).projected);
+                tx->addAction(act_["texprojected"]);
+                tx->addSeparator();
+                for (auto id : {"texrot90", "texrot180", "texrot270", "texfliph", "texflipv"}) tx->addAction(act_[id]);
+            }
+        }
         double area = 0;
         for (int f : doc_->selectedFaces()) area += doc_->active().faceArea(f);
         m.addAction("Area: " + formatArea(area, doc_->model.units))->setEnabled(false);
@@ -1908,6 +1932,80 @@ void MainWindow::about() {
                 "Sticky geometry, inference, push/pull, groups &amp; components, solid tools, "
                 "sections, shadows, scenes and OBJ/STL/DAE/DXF interchange.");
     box.exec();
+}
+
+
+// ======================================================================= textures
+
+bool MainWindow::textureTarget(int& face, bool& back) const {
+    const auto& sel = doc_->sel;
+    if (sel.size() != 1 || sel[0].kind != EntKind::Face) return false;
+    const Entities& E = doc_->active();
+    face = sel[0].id;
+    if (face < 0 || face >= (int)E.faces.size() || !E.faces[face].alive) return false;
+    Mat4 xf = doc_->activeXf();
+    Vec3 n = xf.normal(E.faces[face].plane.n), c = xf.point(E.faceCentroid(face));
+    Vec3 toEye = view_->cam.s->perspective ? view_->cam.s->eye - c : -view_->cam.forward();
+    back = n.dot(toEye) < 0;
+    return true;
+}
+
+void MainWindow::textureCommand(int what) {
+    int f;
+    bool back;
+    if (!textureTarget(f, back)) return;
+    if (what == 0) {
+        auto* tp = static_cast<TexturePositionTool*>(view_->toolById("texpos"));
+        if (!tp) return;
+        tp->target(f, back);
+        if (view_->tool() == tp) tp->activate();
+        else view_->setTool("texpos");
+        view_->setFocus();
+        return;
+    }
+    static const char* names[] = {"", "Reset Texture Position", "Projected Texture", "Rotate Texture", "Rotate Texture",
+                                  "Rotate Texture", "Flip Texture", "Flip Texture"};
+    Entities& E = doc_->active();
+    doc_->begin(names[what]);
+    Face& F = E.faces[f];
+    TexMap& t = back ? F.texBack : F.texFront;
+    if (what == 1) {
+        bool p = t.projected;
+        t = TexMap();
+        t.projected = p;
+    } else if (what == 2) {
+        TexMap e = geom::effectiveTexMap(F, back);
+        e.projected = !t.projected;
+        t = e;
+    } else {
+        int mat = back ? F.matBack : F.matFront;
+        double w = 1000, h = 1000;
+        if (mat >= 0 && mat < (int)doc_->model.materials.size()) {
+            w = std::max(doc_->model.materials[mat].texW, 1e-3);
+            h = std::max(doc_->model.materials[mat].texH, 1e-3);
+        }
+        TexMap e = geom::effectiveTexMap(F, back);
+        Vec3 c = E.faceCentroid(f);
+        double u0 = std::floor((c.dot(e.uAxis) + e.uOff) / w) * w, v0 = std::floor((c.dot(e.vAxis) + e.vOff) / h) * h;
+        Vec3 P[3] = {geom::texPoint(F.plane, e, u0, v0), geom::texPoint(F.plane, e, u0 + w, v0), geom::texPoint(F.plane, e, u0, v0 + h)};
+        Vec3 n = back ? -F.plane.n : F.plane.n;
+        if (what <= 5) {
+            // turn the tile about its centre, counter-clockwise as seen from this side
+            Vec3 C = (P[1] + P[2]) * 0.5;
+            Mat4 R = Mat4::rotationAbout(C, n, kPi / 2 * (what - 2));
+            for (auto& p : P) p = R.point(p);
+        } else if (what == 6) {
+            Vec3 a = P[0], b = P[1], d = P[2];
+            P[0] = b; P[1] = a; P[2] = d + (b - a);
+        } else {
+            Vec3 a = P[0], b = P[1], d = P[2];
+            P[0] = d; P[2] = a; P[1] = b + (d - a);
+        }
+        geom::texMapFromPins(F.plane, P[0], P[1], P[2], w, h, e, u0, v0);
+        t = e;
+    }
+    E.touch();
+    doc_->commit();
 }
 
 }  // namespace gable

@@ -56,6 +56,7 @@ struct Edge {
 // Texture placement on a face: uv = (p·uAxis + uOff, p·vAxis + vOff) / texture size.
 struct TexMap {
     bool custom = false;
+    bool projected = false;   // painting with a material sampled from this face copies the mapping as is
     Vec3 uAxis{1, 0, 0}, vAxis{0, 1, 0};
     double uOff = 0, vOff = 0;
 };

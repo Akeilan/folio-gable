@@ -98,6 +98,17 @@ double volume(const Entities& E);
 BBox faceBBox(const Entities& E, int f);
 
 Vec3 newellNormal(const Entities& E, const std::vector<int>& loop);
+
+// ---- texture placement
+// The mapping a face side is drawn with (the face's own frame when it has no custom mapping).
+TexMap effectiveTexMap(const Face& F, bool back);
+// The point on plane pl where the mapping gives texture coordinates (u, v) (model units).
+Vec3 texPoint(const Plane& pl, const TexMap& t, double u, double v);
+// The mapping that puts texture coordinates (u0,v0) at p0, (u0+w,v0) at p1 and (u0,v0+h) at p2 (all on pl).
+bool texMapFromPins(const Plane& pl, const Vec3& p0, const Vec3& p1, const Vec3& p2, double w, double h, TexMap& out,
+                    double u0 = 0, double v0 = 0);
+// The same placement after the geometry moves by m (uv(m p) = uv(p)).
+TexMap transformTexMap(const TexMap& t, const Mat4& m);
 // Topology/geometry integrity check; returns human-readable problems (empty = healthy).
 std::vector<std::string> validate(const Entities& E, int maxReports = 20);
 

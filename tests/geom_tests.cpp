@@ -340,6 +340,84 @@ static void testSolidsCoplanar() {
         }
 }
 
+static void testTextures() {
+    // pins -> mapping -> points, on a sloped plane
+    Plane pl(Vec3(0.3, -0.4, 0.86).normalized(), Vec3(100, 200, 300));
+    Vec3 p0 = pl.project(Vec3(10, 20, 0)), p1 = pl.project(Vec3(900, 120, 0)), p2 = pl.project(Vec3(-50, 700, 0));
+    TexMap t;
+    CHECK(geom::texMapFromPins(pl, p0, p1, p2, 1000, 500, t));
+    auto uv = [&](const Vec3& p) { return Vec2(p.dot(t.uAxis) + t.uOff, p.dot(t.vAxis) + t.vOff); };
+    NEAR(uv(p0).x, 0, 1e-6); NEAR(uv(p0).y, 0, 1e-6);
+    NEAR(uv(p1).x, 1000, 1e-6); NEAR(uv(p1).y, 0, 1e-6);
+    NEAR(uv(p2).x, 0, 1e-6); NEAR(uv(p2).y, 500, 1e-6);
+    CHECK((geom::texPoint(pl, t, 1000, 0) - p1).length() < 1e-6);
+    CHECK((geom::texPoint(pl, t, 0, 500) - p2).length() < 1e-6);
+    // collinear pins are refused
+    CHECK(!geom::texMapFromPins(pl, p0, p1, p0 + (p1 - p0) * 2, 1000, 500, t));
+    // a moved mapping gives the moved point the same coordinates
+    CHECK(geom::texMapFromPins(pl, p0, p1, p2, 1000, 500, t));
+    Mat4 m = Mat4::translation(Vec3(50, -70, 20)) * Mat4::rotation(Vec3(0, 0, 1), 0.7);
+    TexMap tm = geom::transformTexMap(t, m);
+    Vec3 q = p1 + (p2 - p1) * 0.3;
+    Vec2 a = uv(q);
+    Vec3 mq = m.point(q);
+    NEAR(mq.dot(tm.uAxis) + tm.uOff, a.x, 1e-6);
+    NEAR(mq.dot(tm.vAxis) + tm.vOff, a.y, 1e-6);
+    // a face moved as a whole keeps its texture on it
+    Entities E;
+    geom::addPolyline(E, rect(0, 0, 2000, 1000), true);
+    int f = findFaceAt(E, Vec3(1000, 500, 0), Vec3(0, 0, 1));
+    CHECK(f >= 0);
+    if (f >= 0) {
+        Face& F = E.faces[f];
+        CHECK(geom::texMapFromPins(F.plane, Vec3(100, 100, 0), Vec3(600, 100, 0), Vec3(100, 400, 0), 500, 300, F.texFront));
+        TexMap before = F.texFront;
+        Vec3 c(700, 300, 0);
+        double u0 = c.dot(before.uAxis) + before.uOff;
+        std::vector<int> vs = E.faceVerts(f);
+        Mat4 mv = Mat4::translation(Vec3(300, 200, 50));
+        geom::transformVertices(E, vs, mv, false);
+        const TexMap& after = E.faces[f].texFront;
+        Vec3 mc = mv.point(c);
+        NEAR(mc.dot(after.uAxis) + after.uOff, u0, 1e-6);
+        // the projected flag survives saving
+        E.faces[f].texFront.projected = true;
+        Model M;
+        M.root = E;
+        QByteArray data = saveModel(M);
+        Model R;
+        QString err;
+        CHECK(loadModel(R, data, &err));
+        bool proj = false;
+        for (auto& G : R.root.faces) if (G.alive && G.texFront.projected) proj = true;
+        CHECK(proj);
+    }
+    // the same through a healing move of a whole box
+    {
+        Entities B;
+        box(B, 0, 0, 2000, 1500, 1000);
+        int tf = findFaceAt(B, Vec3(1000, 750, 1000), Vec3(0, 0, 1));
+        CHECK(tf >= 0);
+        if (tf >= 0) {
+            B.faces[tf].texFront = geom::effectiveTexMap(B.faces[tf], false);
+            Vec3 c(700, 400, 1000);
+            double u0 = c.dot(B.faces[tf].texFront.uAxis) + B.faces[tf].texFront.uOff;
+            std::vector<int> all;
+            for (int v = 0; v < (int)B.verts.size(); ++v) if (B.verts[v].alive) all.push_back(v);
+            geom::transformVertices(B, all, Mat4::translation(Vec3(300, 0, 0)), true);
+            int tf2 = findFaceAt(B, Vec3(1300, 750, 1000), Vec3(0, 0, 1));
+            CHECK(tf2 >= 0);
+            if (tf2 >= 0) {
+                const TexMap& t = B.faces[tf2].texFront;
+                Vec3 mc = c + Vec3(300, 0, 0);
+                NEAR(mc.dot(t.uAxis) + t.uOff, u0, 1e-6);
+                if (std::fabs(mc.dot(t.uAxis) + t.uOff - u0) > 1e-6) std::printf("   tf %d -> %d custom %d\n", tf, tf2, t.custom);
+            }
+        }
+    }
+    std::printf("textures: placement ok\n");
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -355,6 +433,7 @@ int main(int argc, char** argv) {
     testHouse();
     testSandbox();
     testSTL();
+    testTextures();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

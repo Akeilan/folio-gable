@@ -15,6 +15,7 @@
 #include "tools/Tool.h"
 #include "tools/Tools.h"
 #include <QAbstractButton>
+#include <QBuffer>
 #include <QApplication>
 #include <QDialog>
 #include <QLineF>
@@ -870,6 +871,125 @@ private:
         }
     }
 
+    void sTextures() {
+        begin("texture: position, reset, rotate, flip, projected, follows moves");
+        reset();
+        box(2000, 1500, 1000);
+        // a textured material (a 2 x 2 checker, 500 mm per tile)
+        QImage img(64, 64, QImage::Format_RGB32);
+        for (int y = 0; y < 64; ++y)
+            for (int x = 0; x < 64; ++x) img.setPixel(x, y, ((x / 32) ^ (y / 32)) ? 0xff2060c0 : 0xfff0e0a0);
+        Material mt;
+        mt.name = "Checker";
+        mt.hasTexture = true;
+        QBuffer buf(&mt.texturePng);
+        buf.open(QIODevice::WriteOnly);
+        img.save(&buf, "PNG");
+        mt.texW = mt.texH = 500;
+        d->model.materials.push_back(mt);
+        int mat = (int)d->model.materials.size() - 1;
+        int top = faceAt(Vec3(1000, 750, 1000));
+        check(top >= 0, "box has a top face");
+        if (top < 0) return;
+        E().faces[top].matFront = E().faces[top].matBack = mat;
+        E().touch();
+        d->setSelection({{EntKind::Face, top}});
+        settle();
+        auto uvAt = [&](const Vec3& p) {
+            TexMap t = geom::effectiveTexMap(E().faces[top], false);
+            return Vec2(p.dot(t.uAxis) + t.uOff, p.dot(t.vAxis) + t.vOff);
+        };
+        Vec3 probe(800, 600, 1000);
+        Vec2 uv0 = uvAt(probe);
+        act("texposition");
+        auto* tp = static_cast<TexturePositionTool*>(v->toolById("texpos"));
+        check(v->tool() == tp && tp->isActive(), "Position Texture opens the pins");
+        // red pin: move the texture by 200 mm in x
+        Vec3 r0 = tp->pinWorld(0);
+        dragPx(scr(r0), scr(r0 + Vec3(200, 0, 0)));
+        Vec2 uv1 = uvAt(probe);
+        check(near(std::hypot(uv1.x - uv0.x, uv1.y - uv0.y), 200, 3), QString("red pin moves the texture (%1,%2 -> %3,%4; pin %5,%6,%7 -> %8,%9,%10)")
+              .arg(uv0.x).arg(uv0.y).arg(uv1.x).arg(uv1.y).arg(r0.x).arg(r0.y).arg(r0.z).arg(tp->pinWorld(0).x).arg(tp->pinWorld(0).y).arg(tp->pinWorld(0).z));
+        // green pin: drag it to double the tile width, keeping the direction
+        Vec3 g0 = tp->pinWorld(0), g1 = tp->pinWorld(1);
+        dragPx(scr(g1), scr(g0 + (g1 - g0) * 2));
+        TexMap t2 = geom::effectiveTexMap(E().faces[top], false);
+        check(near(t2.uAxis.length(), 0.5, 0.02) && near(t2.vAxis.length(), 0.5, 0.02), "green pin scales the texture");
+        // blue pin: shear
+        Vec3 b0 = tp->pinWorld(2);
+        dragPx(scr(b0), scr(b0 + Vec3(150, 0, 0)));
+        TexMap t3 = geom::effectiveTexMap(E().faces[top], false);
+        check(std::fabs(t3.uAxis.normalized().dot(t3.vAxis.normalized())) > 0.05, "blue pin shears the texture");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) v->grabFramebuffer().save(QDir::tempPath() + "/gable-texpos.png");
+        key(Qt::Key_Return);
+        check(v->tool() != tp, "Enter finishes");
+        d->undo();
+        settle();
+        Vec2 uvU = uvAt(probe);
+        check(near(uvU.x, uv0.x, 0.01) && near(uvU.y, uv0.y, 0.01), "undo restores the texture position");
+        d->redo();
+        settle();
+        // Esc cancels a positioning
+        TexMap before = geom::effectiveTexMap(E().faces[top], false);
+        d->setSelection({{EntKind::Face, top}});
+        act("texposition");
+        Vec3 rr = tp->pinWorld(0);
+        dragPx(scr(rr), scr(rr + Vec3(0, 300, 0)));
+        key(Qt::Key_Escape);
+        TexMap after = geom::effectiveTexMap(E().faces[top], false);
+        check(near(after.uOff, before.uOff, 1e-6) && near(after.vOff, before.vOff, 1e-6), "Esc cancels");
+        // rotate and flip
+        d->setSelection({{EntKind::Face, top}});
+        TexMap a0 = geom::effectiveTexMap(E().faces[top], false);
+        act("texrot90");
+        TexMap a1 = geom::effectiveTexMap(E().faces[top], false);
+        check(std::fabs(a0.uAxis.normalized().dot(a1.uAxis.normalized()) - a0.uAxis.normalized().dot(a0.uAxis.normalized()) * 0) < 0.6 &&
+              std::fabs(a0.uAxis.normalized().dot(a1.uAxis.normalized())) < 0.6, "rotate 90 turns the texture");
+        act("texrot270");
+        TexMap a2 = geom::effectiveTexMap(E().faces[top], false);
+        check(near(a2.uAxis.normalized().dot(a0.uAxis.normalized()), 1, 1e-6), "rotate 270 after 90 is a full turn");
+        auto handed = [&](const TexMap& t) { return t.uAxis.cross(t.vAxis).dot(E().faces[top].plane.n); };
+        double h0 = handed(geom::effectiveTexMap(E().faces[top], false));
+        act("texfliph");
+        check(handed(geom::effectiveTexMap(E().faces[top], false)) * h0 < 0, "flip mirrors the texture");
+        act("texflipv");
+        check(handed(geom::effectiveTexMap(E().faces[top], false)) * h0 > 0, "second flip mirrors it back");
+        act("texreset");
+        check(!E().faces[top].texFront.custom, "reset goes back to the face's own placement");
+        // projected: sample from the top, paint the front face; the mapping is copied as is
+        act("texprojected");
+        check(E().faces[top].texFront.projected, "Projected toggles on");
+        TexMap pm = E().faces[top].texFront;
+        int front = faceAt(Vec3(1000, 0, 500));
+        tool("paint");
+        click(Vec3(1000, 750, 1000), Qt::AltModifier);
+        d->clearSelection();
+        click(Vec3(1000, 0, 500));
+        int fr = faceAt(Vec3(1000, 0, 500));
+        check(fr >= 0 && E().faces[fr].matFront == mat && E().faces[fr].texFront.projected &&
+              (E().faces[fr].texFront.uAxis - pm.uAxis).length() < 1e-9, "a sampled projected texture paints on unchanged");
+        (void)front;
+        // moving the whole box carries its textures along
+        tool("select");
+        act("selectall");
+        Vec2 before2 = uvAt(Vec3(700, 400, 1000));
+        tool("move");
+        click(Vec3(0, 0, 0));
+        move(Vec3(300, 0, 0));
+        type("<300,0,0>");
+        int top2 = faceAt(Vec3(2200, 750, 1000));
+        check(top2 >= 0, "box moved");
+        if (top2 >= 0) {
+            TexMap tm = geom::effectiveTexMap(E().faces[top2], false);
+            Vec3 q(1000, 400, 1000);
+            check(near(q.dot(tm.uAxis) + tm.uOff, before2.x, 0.5) && near(q.dot(tm.vAxis) + tm.vOff, before2.y, 0.5),
+                  QString("texture moves with the face (%1,%2 vs %3,%4) custom %5 off %6 top %7->%8 sel %9").arg(q.dot(tm.uAxis) + tm.uOff).arg(q.dot(tm.vAxis) + tm.vOff).arg(before2.x).arg(before2.y)
+                  .arg(E().faces[top2].texFront.custom).arg(E().faces[top2].texFront.uOff).arg(top).arg(top2).arg(d->sel.size()));
+        }
+        validate("textures");
+        tool("select");
+    }
+
     void sOrbit() {
         begin("orbit: about the point under the cursor, and in empty space");
         reset();
@@ -1178,7 +1298,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1206,6 +1326,7 @@ int Auditor::run() {
     sGroupEdit();
     sSlice();
     sOrbit();
+    sTextures();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();

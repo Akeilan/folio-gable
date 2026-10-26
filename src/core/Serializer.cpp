@@ -7,7 +7,8 @@
 namespace gable {
 
 static const quint32 kMagic = 0x4742414C;  // "GBAL"
-static const quint32 kVersion = 3;
+static const quint32 kVersion = 4;   // 4: texture mappings carry the "projected" flag
+static quint32 gReadVersion = kVersion;
 
 static QDataStream& operator<<(QDataStream& s, const Vec3& v) { return s << v.x << v.y << v.z; }
 static QDataStream& operator>>(QDataStream& s, Vec3& v) { return s >> v.x >> v.y >> v.z; }
@@ -15,8 +16,13 @@ static QDataStream& operator<<(QDataStream& s, const Plane& p) { return s << p.n
 static QDataStream& operator>>(QDataStream& s, Plane& p) { return s >> p.n >> p.d; }
 static QDataStream& operator<<(QDataStream& s, const Mat4& m) { for (double d : m.m) s << d; return s; }
 static QDataStream& operator>>(QDataStream& s, Mat4& m) { for (double& d : m.m) s >> d; return s; }
-static QDataStream& operator<<(QDataStream& s, const TexMap& t) { return s << t.custom << t.uAxis << t.vAxis << t.uOff << t.vOff; }
-static QDataStream& operator>>(QDataStream& s, TexMap& t) { return s >> t.custom >> t.uAxis >> t.vAxis >> t.uOff >> t.vOff; }
+static QDataStream& operator<<(QDataStream& s, const TexMap& t) { return s << t.custom << t.uAxis << t.vAxis << t.uOff << t.vOff << t.projected; }
+static QDataStream& operator>>(QDataStream& s, TexMap& t) {
+    s >> t.custom >> t.uAxis >> t.vAxis >> t.uOff >> t.vOff;
+    t.projected = false;
+    if (gReadVersion >= 4) s >> t.projected;
+    return s;
+}
 
 static void writeIntVec(QDataStream& s, const std::vector<int>& v) {
     s << (quint32)v.size();
@@ -266,6 +272,7 @@ bool loadModel(Model& m, const QByteArray& dataIn, QString* error) {
     s.setVersion(QDataStream::Qt_6_0);
     quint32 magic, version;
     s >> magic >> version;
+    gReadVersion = version;
     if (magic != kMagic || version > kVersion) {
         if (error) *error = "Not a Folio Gable model file (or written by a newer version).";
         return false;

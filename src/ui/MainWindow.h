@@ -116,6 +116,10 @@ private:
     void solidOp(int op);
     void intersect(int mode);
     void reverseFaces();
+    // Texture commands on the one selected face (side facing the camera): 0 Position, 1 Reset,
+    // 2 Projected on/off, 3/4/5 rotate 90/180/270, 6 flip left-right, 7 flip up-down.
+    void textureCommand(int what);
+    bool textureTarget(int& face, bool& back) const;
     void orientFaces();
     void flipAlong(int axis);
     void text3D();

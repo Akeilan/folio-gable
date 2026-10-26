@@ -1272,17 +1272,23 @@ void PaintTool::mousePress(const MouseEv& e) {
     }
     if (e.alt()) {
         int m = -1;
-        if (r.kind == EntKind::Face) m = back ? E.faces[r.id].matBack : E.faces[r.id].matFront;
-        else if (r.kind == EntKind::Instance) m = E.insts[r.id].material;
+        haveProjected_ = false;
+        if (r.kind == EntKind::Face) {
+            m = back ? E.faces[r.id].matBack : E.faces[r.id].matFront;
+            const TexMap& t = back ? E.faces[r.id].texBack : E.faces[r.id].texFront;
+            if (t.custom && t.projected) { haveProjected_ = true; projectedMat_ = m; projected_ = t; }
+        } else if (r.kind == EntKind::Instance) m = E.insts[r.id].material;
         if (sampled) sampled(m);
         return;
     }
     int mat = currentMaterial ? currentMaterial() : -1;
     if (!r.valid()) return;
     doc()->begin("Paint");
+    const bool copyMapping = haveProjected_ && mat == projectedMat_;
     auto paintFace = [&](int f, bool b) {
         if (b) E.faces[f].matBack = mat;
         else E.faces[f].matFront = mat;
+        if (copyMapping) (b ? E.faces[f].texBack : E.faces[f].texFront) = projected_;
     };
     if (r.kind == EntKind::Face) {
         int old = back ? E.faces[r.id].matBack : E.faces[r.id].matFront;

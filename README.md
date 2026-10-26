@@ -22,6 +22,8 @@ Large models (100,000+ faces, such as an imported house or a terrain) stay respo
 
 `folio-gable --bench` builds three 100,000-face models and prints the timings.
 
+Texture positioning: right-click a textured face › Texture › Position shows pins on the face — drag the red pin to move the texture, green to rotate and scale it, blue to scale and shear it (dragging elsewhere on the texture also moves it); Enter or a click away finishes, Esc cancels. The same menu resets the position, rotates by 90°/180°/270°, flips, and turns on Projected: a projected texture sampled with the Paint Bucket (Alt) paints onto other faces unchanged, so it runs across terrain or sloped faces as one picture. Textures now move with faces that are moved, rotated or scaled as a whole.
+
 ## What's new in 2.0
 
 - Folio suite window: purple title bar with Save/Undo/Redo and command search, ribbon tabs (Home, Draw, Modify, Construct, Solids, Terrain, Camera, View, Help, and Group Editing while a group is open), KeyTips, File view with templates, recent models with thumbnails, Info, Export and Options; new suite-style icon set.
