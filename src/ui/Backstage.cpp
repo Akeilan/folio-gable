@@ -144,7 +144,7 @@ QWidget* Backstage::page(const QString& key) {
 QWidget* Backstage::frame(const QString& title, QVBoxLayout*& lay) {
     auto* w = new QWidget;
     w->setAttribute(Qt::WA_StyledBackground);
-    w->setStyleSheet("background: #ffffff;");
+    w->setStyleSheet(theme::isDark() ? "background: #1f1f1f; color: #f0f0f0;" : "background: #ffffff;");
     lay = new QVBoxLayout(w);
     lay->setContentsMargins(36, 28, 36, 28);
     lay->setSpacing(10);
@@ -217,8 +217,9 @@ QTreeWidget* Backstage::recentList(int limit, const QString& filter) {
         QFont f = it->font(0);
         f.setBold(true);
         it->setFont(0, f);
-        it->setForeground(1, QColor(0x6b, 0x6b, 0x6b));
-        it->setForeground(2, QColor(0x6b, 0x6b, 0x6b));
+        QColor dim = theme::isDark() ? QColor(0xa0, 0xa0, 0xa0) : QColor(0x6b, 0x6b, 0x6b);
+        it->setForeground(1, dim);
+        it->setForeground(2, dim);
         QPixmap th = host_.thumbnail ? host_.thumbnail(p) : QPixmap();
         if (th.isNull()) th = appIconPixmap(34);
         it->setIcon(0, QIcon(th));
