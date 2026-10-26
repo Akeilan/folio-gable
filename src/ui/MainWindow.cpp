@@ -242,6 +242,8 @@ void MainWindow::buildActions() {
     addAct("export3d", "Export 3D Model…", QKeySequence(), [this] { exportModel(); });
     addAct("exportstl", "Export STL…", QKeySequence(), [this] { exportModel("stl"); });
     addAct("exportobj", "Export OBJ…", QKeySequence(), [this] { exportModel("obj"); });
+    addAct("exportgltf", "Export glTF…", QKeySequence(), [this] { exportModel("glb"); });
+    addAct("export3mf", "Export 3MF…", QKeySequence(), [this] { exportModel("3mf"); });
     addAct("export2d", "Export 2D Graphic…", QKeySequence(), [this] { exportImage(); });
     addAct("print", "&Print…", QKeySequence::Print, [this] { print(); });
     addAct("quit", "E&xit", QKeySequence::Quit, [this] { close(); });
@@ -885,7 +887,8 @@ void MainWindow::importFile() {
 void MainWindow::exportModel(const QString& forcedExt) {
     QSettings s;
     struct Fmt { const char* ext; const char* name; };
-    static const Fmt fmts[] = {{"stl", "STL (3D printing)"}, {"obj", "Wavefront OBJ"}, {"dae", "COLLADA"}, {"dxf", "AutoCAD DXF"}};
+    static const Fmt fmts[] = {{"stl", "STL (3D printing)"}, {"3mf", "3MF (3D printing, with colours)"}, {"glb", "glTF binary"},
+                               {"gltf", "glTF"}, {"obj", "Wavefront OBJ"}, {"dae", "COLLADA"}, {"dxf", "AutoCAD DXF"}};
     QString ext = forcedExt;
     QDialog dlg(this);
     dlg.setWindowTitle("Export 3D Model");
@@ -911,11 +914,14 @@ void MainWindow::exportModel(const QString& forcedExt) {
     form->addRow("", binary);
     auto sync = [&] {
         QString e = fmt->currentData().toString();
+        // glTF is always Y-up metres and 3MF millimetres: those formats fix their own units
+        bool fixedUnits = e == "dae" || e == "gltf" || e == "glb" || e == "3mf";
         binary->setEnabled(e == "stl");
-        edges->setEnabled(e == "obj" || e == "dxf");
-        units->setEnabled(e != "dae");
-        units->setCurrentIndex(e == "obj" ? 2 : 0);
-        yup->setChecked(false);
+        edges->setEnabled(e == "obj" || e == "dxf" || e == "gltf" || e == "glb");
+        units->setEnabled(!fixedUnits);
+        units->setCurrentIndex(e == "obj" || e == "gltf" || e == "glb" ? 2 : 0);
+        yup->setChecked(e == "gltf" || e == "glb");
+        yup->setEnabled(!fixedUnits);
     };
     sync();
     connect(fmt, QOverload<int>::of(&QComboBox::currentIndexChanged), &dlg, [&](int) { sync(); });
@@ -955,7 +961,7 @@ void MainWindow::exportModel(const QString& forcedExt) {
     QApplication::restoreOverrideCursor();
     if (!ok) { QMessageBox::warning(this, "Export", err); return; }
     QString msg = "Exported " + QFileInfo(fn).fileName();
-    if (ext == "stl" && !err.isEmpty()) msg += " — " + err;
+    if ((ext == "stl" || ext == "3mf") && !err.isEmpty()) msg += " — " + err;
     statusBar()->showMessage(msg, 8000);
 }
 

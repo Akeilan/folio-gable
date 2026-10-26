@@ -6,6 +6,11 @@
 #include "core/Sandbox.h"
 #include <QCoreApplication>
 #include <QTemporaryDir>
+#include <QBuffer>
+#include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <cstdio>
 
 using namespace gable;
@@ -420,6 +425,66 @@ static void testTextures() {
 
 // A camera seen through its picture: project known edges of a box, put the grips on them, and
 // the solver must give back the camera.
+// glTF/GLB/3MF: files written for other programs. The structure is checked here; set
+// GABLE_KEEP_EXPORTS to a folder to keep them for outside validators.
+static void testExport3D() {
+    QTemporaryDir td;
+    QString dir = qEnvironmentVariableIsSet("GABLE_KEEP_EXPORTS") ? qEnvironmentVariable("GABLE_KEEP_EXPORTS") : td.path();
+    Model m;
+    box(m.root, 0, 0, 2000, 1000, 500);
+    box(m.root, 3000, 0, 3600, 600, 900);   // a second, separate solid
+    int red = m.addMaterial("Red", QColor(200, 30, 30));
+    int glass = m.addMaterial("Glass", QColor(120, 180, 220));
+    m.materials[glass].alpha = 0.4;
+    int tex = m.addMaterial("Checker", QColor(255, 255, 255));
+    {
+        QImage img(32, 32, QImage::Format_RGB32);
+        img.fill(Qt::white);
+        for (int y = 0; y < 16; ++y) for (int x = 0; x < 16; ++x) img.setPixel(x, y, 0xff2040c0);
+        QBuffer b(&m.materials[tex].texturePng);
+        b.open(QIODevice::WriteOnly);
+        img.save(&b, "PNG");
+        m.materials[tex].hasTexture = true;
+        m.materials[tex].texW = m.materials[tex].texH = 500;
+    }
+    int nf = 0;
+    for (auto& F : m.root.faces) if (F.alive) F.matFront = (nf++ % 3 == 0) ? red : (nf % 3 == 0 ? glass : tex);
+    QString err;
+    ExportOptions eo;
+    eo.exportEdges = true;
+    // glTF: JSON with the data inside
+    CHECK(exportFile(m, dir + "/t.gltf", eo, &err));
+    QFile f(dir + "/t.gltf");
+    CHECK(f.open(QIODevice::ReadOnly));
+    QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    CHECK(root["asset"].toObject()["version"].toString() == "2.0");
+    QJsonArray prims = root["meshes"].toArray()[0].toObject()["primitives"].toArray();
+    CHECK(prims.size() == 4);   // three materials and the edges
+    CHECK(root["images"].toArray().size() == 1 && root["textures"].toArray().size() == 1);
+    QJsonArray acc = root["accessors"].toArray();
+    QJsonArray mx = acc[prims[0].toObject()["attributes"].toObject()["POSITION"].toInt()].toObject()["max"].toArray();
+    CHECK(mx.size() == 3 && mx[1].toDouble() <= 0.9 + 1e-6);   // Y is up, in metres
+    bool blend = false;
+    for (auto v : root["materials"].toArray()) blend |= v.toObject()["alphaMode"].toString() == "BLEND";
+    CHECK(blend);
+    // GLB: the same in one binary file
+    CHECK(exportFile(m, dir + "/t.glb", eo, &err));
+    QFile g(dir + "/t.glb");
+    CHECK(g.open(QIODevice::ReadOnly));
+    QByteArray glb = g.readAll();
+    CHECK(glb.size() > 20 && glb.startsWith("glTF"));
+    quint32 total = 0;
+    memcpy(&total, glb.constData() + 8, 4);
+    CHECK(total == (quint32)glb.size() && glb.size() % 4 == 0);
+    // 3MF: a ZIP holding one object per closed shell
+    CHECK(exportFile(m, dir + "/t.3mf", eo, &err));
+    CHECK(err.isEmpty());
+    QFile z(dir + "/t.3mf");
+    CHECK(z.open(QIODevice::ReadOnly));
+    QByteArray zip = z.readAll();
+    CHECK(zip.startsWith("PK\x03\x04") && zip.contains("3D/3dmodel.model") && zip.contains("[Content_Types].xml"));
+}
+
 static void testMatchPhoto() {
     struct Cam { Vec3 eye, target; double fov; };
     for (Cam c : {Cam{Vec3(-5200, -7300, 1600), Vec3(1200, 900, 400), 48}, Cam{Vec3(6100, -4800, 2600), Vec3(400, 700, 0), 36},
@@ -485,6 +550,7 @@ int main(int argc, char** argv) {
     testSTL();
     testTextures();
     testMatchPhoto();
+    testExport3D();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
