@@ -531,6 +531,7 @@ void Text3DPlaceTool::mousePress(const MouseEv& e) {
     Instance in;
     in.def = def;
     in.xf = xf;
+    in.attrs = doc()->model.defs[def].attrs;   // a dynamic component starts with its definition's attributes
     doc()->begin("Place Component");
     doc()->active().insts.push_back(in);
     // Cut opening: punch the component's footprint (its faces on local z=0) into the face it sits on.

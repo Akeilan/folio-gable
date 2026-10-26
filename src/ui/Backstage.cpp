@@ -425,6 +425,10 @@ QWidget* Backstage::pageExport() {
     v->addSpacing(8);
     v->addWidget(label("2D graphic", "bsCard"));
     v->addWidget(bigButton("exportimage", "Image or PDF", "The current view as PNG, JPEG or a PDF page, at any resolution.", host_.exportImage));
+    v->addSpacing(8);
+    v->addWidget(label("Drawing sheets", "bsCard"));
+    v->addWidget(bigButton("sendtolayout", "Send to LayOut", "Not available: Folio Gable has no app for drawing sheets yet.",
+                           [this] { if (host_.notAvailable) host_.notAvailable("Send to LayOut"); }));
     v->addStretch(1);
     return w;
 }

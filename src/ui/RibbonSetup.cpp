@@ -70,6 +70,12 @@ static const std::map<QString, QString>& descriptions() {
         {"exportgltf", "Save the model as glTF for Blender, game engines and the web."},
         {"export3mf", "Save the model as 3MF for 3D printing, with colours."},
         {"copyview", "Copy what the view shows as a picture, to paste into Draw, Sheets or other programs."},
+        {"interact", "Click dynamic components to make them act: open a door, change a finish."},
+        {"componentoptions", "Change the options of the selected dynamic component: its size, finish and so on."},
+        {"componentattributes", "Give a component behaviour: attributes and formulas that size, place, copy and animate its parts."},
+        {"extensions", "Not available: Folio Gable can't run SketchUp extensions."},
+        {"rubyconsole", "Not available: Folio Gable can't run Ruby scripts."},
+        {"sendtolayout", "Not available: Folio Gable has no app for drawing sheets yet."},
         {"solidinspector", "Show why the selected group isn't a solid (holes, stray edges, reversed faces) and fix it."},
         {"export2d", "Save the current view as a PNG or JPEG image at any size."},
         {"print", "Print the current view."},
@@ -307,6 +313,7 @@ void MainWindow::buildChrome() {
     h.print = [this] { print(); };
     h.exportImage = [this] { exportImage(); };
     h.exportModel = [this](const QString& ext) { exportModel(ext); };
+    h.notAvailable = [this](const QString& what) { notAvailable(what); };
     h.options = [this] { preferences(); };
     h.modelInfo = [this] { modelInfo(); };
     h.purge = [this] {
@@ -605,6 +612,9 @@ void MainWindow::buildRibbon() {
         g->large(A("makegroup"), "Make Group", "makegroup");
         g->large(A("makecomponent"), "Make Component", "makecomponent");
         g->column({A("explode"), A("makeunique"), A("closegroup")});
+        g = t->group("Dynamic Components");
+        g->large(T("interact"), "Interact", "interact");
+        g->column({A("componentoptions"), A("componentattributes")});
     }
     // ---------------------------------------------------------------- Construct
     {
@@ -713,6 +723,8 @@ void MainWindow::buildRibbon() {
         RibbonGroup* g = t->group("Help");
         g->large(A("shortcuts"), "Keyboard Shortcuts", "shortcuts");
         g->large(A("about"), "About Folio Gable", "about");
+        g = t->group("Extensions");
+        g->column({A("extensions"), A("rubyconsole")});
     }
     // ---------------------------------------------------------------- contextual: editing a group
     {

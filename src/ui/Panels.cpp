@@ -1,4 +1,5 @@
 #include "ui/Panels.h"
+#include "core/Dynamic.h"
 #include "core/Geometry.h"
 #include "core/Solids.h"
 #include "view/Viewport.h"
@@ -1403,6 +1404,10 @@ void MaterialsPanel::refresh() {
 ComponentsPanel::ComponentsPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d) {
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
+    source_ = new QComboBox;
+    source_->addItems({"In Model", "Dynamic Samples"});
+    source_->setToolTip("Components in this model, or ready-made dynamic components that come with Folio Gable");
+    lay->addWidget(source_);
     showGroups_ = new QCheckBox("Show groups");
     lay->addWidget(showGroups_);
     list_ = new QListWidget;
@@ -1415,8 +1420,19 @@ ComponentsPanel::ComponentsPanel(Document* d, QWidget* parent) : QWidget(parent)
     row->addWidget(place); row->addWidget(rename); row->addWidget(purge);
     lay->addLayout(row);
     auto current = [this]() { auto* it = list_->currentItem(); return it ? it->data(Qt::UserRole).toInt() : -1; };
-    connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* it) { emit placeComponent(it->data(Qt::UserRole).toInt()); });
-    connect(place, &QPushButton::clicked, this, [this, current] { if (current() >= 0) emit placeComponent(current()); });
+    auto placeItem = [this](int d) {
+        if (d <= -100) emit placeSample(-100 - d);
+        else if (d >= 0) emit placeComponent(d);
+    };
+    connect(list_, &QListWidget::itemDoubleClicked, this, [placeItem](QListWidgetItem* it) { placeItem(it->data(Qt::UserRole).toInt()); });
+    connect(place, &QPushButton::clicked, this, [placeItem, current] { placeItem(current()); });
+    connect(source_, &QComboBox::currentIndexChanged, this, [this, rename, purge] {
+        bool samples = source_->currentIndex() == 1;
+        showGroups_->setVisible(!samples);
+        rename->setEnabled(!samples);
+        purge->setEnabled(!samples);
+        refresh();
+    });
     connect(rename, &QPushButton::clicked, this, [this, current] {
         int d = current();
         if (d < 0) return;
@@ -1439,6 +1455,16 @@ ComponentsPanel::ComponentsPanel(Document* d, QWidget* parent) : QWidget(parent)
 
 void ComponentsPanel::refresh() {
     list_->clear();
+    if (source_->currentIndex() == 1) {
+        QStringList names = dyn::sampleNames();
+        for (int i = 0; i < names.size(); ++i) {
+            auto* it = new QListWidgetItem(toolIcon("interact"), names[i]);
+            it->setData(Qt::UserRole, -100 - i);
+            it->setToolTip(dyn::sampleDescription(i));
+            list_->addItem(it);
+        }
+        return;
+    }
     for (int i = 0; i < (int)doc_->model.defs.size(); ++i) {
         const ComponentDef& d = doc_->model.defs[i];
         if (!d.alive || (d.isGroup && !showGroups_->isChecked())) continue;

@@ -1,4 +1,6 @@
 #include "ui/MainWindow.h"
+#include "ui/DynamicDialogs.h"
+#include "core/Dynamic.h"
 #include "ui/TitleBar.h"
 #include "ui/Ribbon.h"
 #include "ui/Backstage.h"
@@ -156,6 +158,7 @@ void MainWindow::buildTools() {
     auto* sel = new SelectTool(view_);
     view_->registerTool(sel);
     view_->registerTool(new LineTool(view_));
+    view_->registerTool(new InteractTool(view_));
     view_->registerTool(new FreehandTool(view_));
     view_->registerTool(new RectTool(view_, false));
     view_->registerTool(new RectTool(view_, true));
@@ -471,6 +474,12 @@ void MainWindow::buildActions() {
     addAct("sbcontours", "From Contours", QKeySequence(), [this] { fromContours(); }, "sbcontours");
     addAct("sbdetail", "Add Detail", QKeySequence(), [this] { addDetail(); });
     addAct("solid_outer", "Outer Shell", QKeySequence(), [this] { solidOp((int)SolidOp::OuterShell); }, "solid");
+    addToolAct("interact", "Interact", QKeySequence(), "interact");
+    addAct("componentoptions", "Component Options", QKeySequence(), [this] { showDynamicDialog(false); }, "componentoptions");
+    addAct("componentattributes", "Component Attributes", QKeySequence(), [this] { showDynamicDialog(true); }, "componentattributes");
+    addAct("extensions", "Extension Manager", QKeySequence(), [this] { notAvailable("Extension Manager"); }, "extensions");
+    addAct("rubyconsole", "Ruby Console", QKeySequence(), [this] { notAvailable("Ruby Console"); }, "rubyconsole");
+    addAct("sendtolayout", "Send to LayOut", QKeySequence(), [this] { notAvailable("Send to LayOut"); }, "sendtolayout");
     addAct("solidinspector", "Solid Inspector", QKeySequence(), [this] { view_->setTool("solidinspect"); }, "solidinspector");
     addAct("solid_union", "Union", QKeySequence(), [this] { solidOp((int)SolidOp::Union); });
     addAct("solid_subtract", "Subtract", QKeySequence(), [this] { solidOp((int)SolidOp::Subtract); });
@@ -499,6 +508,13 @@ void MainWindow::buildTray() {
     connect(materials_, &MaterialsPanel::materialChosen, this, [this](int) { view_->setTool("paint"); });
     tray_->addPanel("Materials", materials_, true);
     auto* comps = new ComponentsPanel(doc_);
+    connect(comps, &ComponentsPanel::placeSample, this, [this, comps](int which) {
+        doc_->begin("Add Dynamic Component");
+        int def = dyn::addSample(doc_->model, which);
+        doc_->commit();
+        doc_->notifyChanged();
+        if (def >= 0) emit comps->placeComponent(def);
+    });
     connect(comps, &ComponentsPanel::placeComponent, this, [this](int def) {
         auto* t = static_cast<Text3DPlaceTool*>(view_->toolById("place"));
         t->def = def;
@@ -1473,6 +1489,12 @@ void MainWindow::contextMenu(const QPoint& at) {
         m.addAction(act_["explode"]);
         m.addAction(act_["makeunique"]);
         m.addAction(act_["solidinspector"]);
+        if (ni == 1) {
+            auto* dm = m.addMenu("Dynamic Components");
+            dm->addAction(act_["componentoptions"]);
+            dm->addAction(act_["componentattributes"]);
+            dm->addAction(act_["tool_interact"]);
+        }
         bool locked = false;
         for (int i : doc_->selectedInstances()) locked |= doc_->active().insts[i].locked;
         m.addAction(locked ? act_["unlock"] : act_["lock"]);
@@ -2090,6 +2112,43 @@ void MainWindow::textureCommand(int what) {
     }
     E.touch();
     doc_->commit();
+}
+
+}  // namespace gable
+
+namespace gable {
+
+void MainWindow::notAvailable(const QString& what) {
+    QString why;
+    if (what == "Send to LayOut")
+        why = "Folio Gable doesn't have an app for drawing sheets yet. To use a view in a document, use Copy View "
+              "(Ctrl+Shift+C) or File › Export › Image or PDF.";
+    else
+        why = "Folio Gable can't run SketchUp extensions or Ruby scripts. Its own tools cover drawing, solids, "
+              "terrain and dynamic components.";
+    QMessageBox::information(this, what, QString("%1 isn't available in Folio Gable.\n\n%2").arg(what, why));
+}
+
+void MainWindow::showDynamicDialog(bool attributes) {
+    QDialog* d;
+    if (attributes) {
+        if (!compAttrs_) {
+            compAttrs_ = new ComponentAttributesDialog(doc_, this);
+            connect(compAttrs_, &ComponentAttributesDialog::redrawn, view_, [this] { view_->update(); });
+        }
+        compAttrs_->refresh();
+        d = compAttrs_;
+    } else {
+        if (!compOptions_) {
+            compOptions_ = new ComponentOptionsDialog(doc_, this);
+            connect(compOptions_, &ComponentOptionsDialog::redrawn, view_, [this] { view_->update(); });
+        }
+        compOptions_->refresh();
+        d = compOptions_;
+    }
+    d->show();
+    d->raise();
+    d->activateWindow();
 }
 
 }  // namespace gable

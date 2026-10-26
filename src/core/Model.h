@@ -72,8 +72,21 @@ struct Face {
     bool alive = true;
 };
 
+// An attribute of a dynamic component (as in the Component Attributes editor): a value, or a
+// formula (stored without the leading '=') whose last result is kept in value. Lengths are in mm,
+// angles in degrees. access: 0 users can't see it, 1 they can see it, 2 they can type a value,
+// 3 they pick from options (label, value).
+struct DynAttr {
+    QString name, formula, value, label, units;
+    int access = 0;
+    std::vector<std::pair<QString, QString>> options;
+};
+
 struct Instance {
     int def = -1;
+    std::vector<DynAttr> attrs;   // dynamic component attributes
+    int copyOf = -1;              // a copy made by the original's Copies attribute (index in the same Entities)
+    int copyIndex = 0;            // COPY in its formulas (1, 2, ...)
     Mat4 xf;
     QString name;
     int tag = 0;
@@ -223,6 +236,7 @@ struct ComponentDef {
     bool alwaysFaceCamera = false;
     bool glue = false;
     bool cutsOpening = false;
+    std::vector<DynAttr> attrs;   // attributes new instances start with
 };
 
 struct CameraState {
