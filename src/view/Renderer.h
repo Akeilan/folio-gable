@@ -63,7 +63,10 @@ private:
     std::map<qint64, std::unique_ptr<QOpenGLTexture>> textures_;  // key: material index
     std::map<qint64, uint64_t> textureRev_;
 
-    QOpenGLShaderProgram faceProg_, lineProg_, stippleProg_, bgProg_, depthProg_, flatProg_;
+    QOpenGLShaderProgram faceProg_, lineProg_, stippleProg_, bgProg_, depthProg_, flatProg_, photoProg_;
+    std::unique_ptr<QOpenGLTexture> photoTex_;
+    uint photoKey_ = 0;
+    double photoAspect_ = 1;
     GLuint dynVao_ = 0, dynVbo_ = 0, triVao_ = 0, triVbo_ = 0, bgVao_ = 0;
     GLuint shadowFbo_ = 0, shadowTex_ = 0;
     int shadowSize_ = 4096;

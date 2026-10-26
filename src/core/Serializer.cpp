@@ -7,7 +7,7 @@
 namespace gable {
 
 static const quint32 kMagic = 0x4742414C;  // "GBAL"
-static const quint32 kVersion = 5;   // 4: texture mappings carry the "projected" flag; 5: edge style settings
+static const quint32 kVersion = 6;   // 4: texture mappings carry the "projected" flag; 5: edge style settings; 6: matched photos
 static quint32 gReadVersion = kVersion;
 
 static QDataStream& operator<<(QDataStream& s, const Vec3& v) { return s << v.x << v.y << v.z; }
@@ -268,6 +268,13 @@ QByteArray saveModel(const Model& m, bool compress) {
             s << sc.hasStyle;
             writeStyle(s, sc.style);
             writeShadow(s, sc.shadow);
+            s << sc.matchPhoto;
+            if (sc.matchPhoto) {
+                const MatchPhoto& p = sc.photo;
+                s << p.image << p.origin.x << p.origin.y << p.eyeHeight << p.turned;
+                for (auto& l : p.lines)
+                    for (auto& e : l) s << e.x << e.y;
+            }
         }
     }
     if (!compress) return raw;
@@ -327,6 +334,15 @@ bool loadModel(Model& m, const QByteArray& dataIn, QString* error) {
         s >> sc.hasStyle;
         readStyle(s, sc.style);
         readShadow(s, sc.shadow);
+        if (version >= 6) {
+            s >> sc.matchPhoto;
+            if (sc.matchPhoto) {
+                MatchPhoto& p = sc.photo;
+                s >> p.image >> p.origin.x >> p.origin.y >> p.eyeHeight >> p.turned;
+                for (auto& l : p.lines)
+                    for (auto& e : l) s >> e.x >> e.y;
+            }
+        }
     }
     if (s.status() != QDataStream::Ok) {
         if (error) *error = "The file is truncated or damaged.";

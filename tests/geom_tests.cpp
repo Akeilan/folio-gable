@@ -418,6 +418,56 @@ static void testTextures() {
     std::printf("textures: placement ok\n");
 }
 
+// A camera seen through its picture: project known edges of a box, put the grips on them, and
+// the solver must give back the camera.
+static void testMatchPhoto() {
+    struct Cam { Vec3 eye, target; double fov; };
+    for (Cam c : {Cam{Vec3(-5200, -7300, 1600), Vec3(1200, 900, 400), 48}, Cam{Vec3(6100, -4800, 2600), Vec3(400, 700, 0), 36},
+                  Cam{Vec3(-3000, 4500, 900), Vec3(800, 300, 700), 60}}) {
+        double aspect = 1.5;
+        Vec3 f = (c.target - c.eye).normalized();
+        Vec3 r = f.cross(Vec3(0, 0, 1)).normalized();
+        Vec3 u = r.cross(f);
+        double t = std::tan(c.fov * kPi / 360);
+        auto shot = [&](const Vec3& p) {
+            Vec3 d = p - c.eye;
+            double z = d.dot(f);
+            double cx = d.dot(r) / (z * t) * 0.5, cy = d.dot(u) / (z * t) * 0.5;   // picture heights
+            return Vec2(cx / aspect + 0.5, 0.5 - cy);
+        };
+        MatchPhoto mp;
+        // box 2000 x 1500 x 1000 at the origin: two edges along red, two along green
+        mp.lines[0][0] = shot(Vec3(0, 0, 0)); mp.lines[0][1] = shot(Vec3(2000, 0, 0));
+        mp.lines[1][0] = shot(Vec3(0, 0, 1000)); mp.lines[1][1] = shot(Vec3(2000, 0, 1000));
+        mp.lines[2][0] = shot(Vec3(0, 0, 0)); mp.lines[2][1] = shot(Vec3(0, 1500, 0));
+        mp.lines[3][0] = shot(Vec3(0, 0, 1000)); mp.lines[3][1] = shot(Vec3(0, 1500, 1000));
+        mp.origin = shot(Vec3(0, 0, 0));
+        mp.eyeHeight = c.eye.z;
+        // the solver takes red as heading into the picture; turned when it comes towards the camera
+        mp.turned = Vec3(1, 0, 0).dot(f) < 0;
+        CameraState out;
+        QString why;
+        bool ok = solveMatchPhoto(mp, aspect, out, &why);
+        CHECK(ok);
+        if (!ok) { std::printf("  %s\n", qPrintable(why)); continue; }
+        NEAR(out.fov, c.fov, 1e-6);
+        NEAR((out.eye - c.eye).length(), 0, 1e-3);
+        Vec3 of = (out.target - out.eye).normalized();
+        NEAR(of.dot(f), 1, 1e-9);
+        NEAR(out.up.dot(u), 1, 1e-9);
+    }
+    // parallel lines and same-side vanishing points are refused
+    MatchPhoto bad;
+    bad.lines[1][0] = Vec2(0.55, 0.62); bad.lines[1][1] = Vec2(0.85, 0.54);
+    bad.lines[0][0] = Vec2(0.55, 0.70); bad.lines[0][1] = Vec2(0.85, 0.62);
+    CameraState out;
+    CHECK(!solveMatchPhoto(bad, 1.5, out));
+    MatchPhoto def;
+    CHECK(solveMatchPhoto(def, 1.0, out));
+    NEAR(out.fov, 2 * std::atan(0.5 / 0.8) * 180 / kPi, 1e-6);
+    NEAR(out.eye.z, def.eyeHeight, 1e-6);
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -434,6 +484,7 @@ int main(int argc, char** argv) {
     testSandbox();
     testSTL();
     testTextures();
+    testMatchPhoto();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -98,6 +98,10 @@ MainWindow::MainWindow() {
     connect(view_, &Viewport::toolChanged, this, [this](const QString& id) {
         for (auto& [k, a] : toolAct_) a->setChecked(k == id);
     });
+    connect(view_, &Viewport::cameraChanged, this, [this] {
+        // orbiting leaves two-point perspective
+        if (act_.count("twopoint")) act_["twopoint"]->setChecked(doc_->model.camera.perspective && doc_->model.camera.twoPoint);
+    });
     connect(doc_, &Document::changed, this, &MainWindow::updateTitle);
     connect(doc_, &Document::fileChanged, this, [this] { updateTitle(); updateSceneTabs(); syncViewToggles(); view_->update(); });
     connect(doc_, &Document::undoStateChanged, this, &MainWindow::updateUndoActions);
@@ -192,6 +196,7 @@ void MainWindow::buildTools() {
     view_->registerTool(new DrapeTool(view_));
     view_->registerTool(new ImageTool(view_));
     view_->registerTool(new TexturePositionTool(view_));
+    view_->registerTool(new MatchPhotoTool(view_));
     paint->currentMaterial = [this] { return materials_ ? materials_->current() : -1; };
     paint->sampled = [this](int m) { if (materials_) materials_->setCurrent(m); };
     text->editText = [this](QString& t) {
@@ -376,6 +381,35 @@ void MainWindow::buildActions() {
     act_["parallel"]->setCheckable(true);
     addAct("perspective", "Perspective", QKeySequence(), [this] { view_->setPerspective(true); syncViewToggles(); }, "perspective");
     act_["perspective"]->setCheckable(true);
+    addAct("twopoint", "Two-Point Perspective", QKeySequence(), [this] {
+        CameraState& c = doc_->model.camera;
+        if (!c.perspective) view_->setPerspective(true);
+        c.twoPoint = !c.twoPoint;
+        emit view_->cameraChanged();
+        view_->update();
+        syncViewToggles();
+    }, "twopoint");
+    act_["twopoint"]->setCheckable(true);
+    addAct("matchphoto", "New Match Photo…", QKeySequence(), [this] { newMatchPhoto(QString()); }, "matchphoto");
+    addAct("matchphoto_edit", "Edit Matched Photo", QKeySequence(), [this] {
+        int sc = doc_->model.shownPhoto;
+        if (sc < 0 || sc >= (int)doc_->model.scenes.size() || !doc_->model.scenes[sc].matchPhoto) {
+            sc = -1;
+            for (int i = (int)doc_->model.scenes.size() - 1; i >= 0 && sc < 0; --i)
+                if (doc_->model.scenes[i].matchPhoto) sc = i;
+        }
+        if (sc < 0) return;
+        auto* t = static_cast<MatchPhotoTool*>(view_->toolById("matchphoto"));
+        t->start(sc);
+        view_->setTool("matchphoto");
+    }, "matchphoto");
+    addAct("matchphoto_done", "Done with Match Photo", QKeySequence(), [this] {
+        auto* t = static_cast<MatchPhotoTool*>(view_->toolById("matchphoto"));
+        if (t->isActive()) { t->finish(true); view_->setTool("select"); }
+    }, "matchphoto");
+    addAct("matchphoto_turn", "Turn Match Photo Axes 180°", QKeySequence(), [this] {
+        static_cast<MatchPhotoTool*>(view_->toolById("matchphoto"))->turnAxes();
+    }, "matchphoto");
     addAct("fov", "Field of View…", QKeySequence(), [this] {
         bool ok;
         double v = QInputDialog::getDouble(this, "Field of View", "Vertical field of view (degrees):", view_->cam.s->fov, 1, 120, 1, &ok);
@@ -525,6 +559,34 @@ void MainWindow::updateSceneTabs() {
     sceneTabs_->setVisible(act_["scenetabs"]->isChecked() && !doc_->model.scenes.empty());
 }
 
+bool MainWindow::newMatchPhoto(const QString& path) {
+    QString fn = path;
+    if (fn.isEmpty())
+        fn = QFileDialog::getOpenFileName(this, "Match Photo", QString(), "Pictures (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff)");
+    if (fn.isEmpty()) return false;
+    QFile f(fn);
+    QByteArray bytes;
+    if (f.open(QIODevice::ReadOnly)) bytes = f.readAll();
+    QImage img = QImage::fromData(bytes);
+    if (img.isNull()) {
+        QMessageBox::warning(this, "Match Photo", "Couldn't read " + QFileInfo(fn).fileName() + " as a picture.");
+        return false;
+    }
+    // keep JPEG and PNG as they are; anything else is stored as PNG
+    QString ext = QFileInfo(fn).suffix().toLower();
+    if (ext != "jpg" && ext != "jpeg" && ext != "png") {
+        bytes.clear();
+        QBuffer b(&bytes);
+        b.open(QIODevice::WriteOnly);
+        img.save(&b, "PNG");
+    }
+    auto* t = static_cast<MatchPhotoTool*>(view_->toolById("matchphoto"));
+    t->start(-1, bytes, QFileInfo(fn).completeBaseName());
+    view_->setTool("matchphoto");
+    if (!t->isActive()) view_->setTool("select");
+    return t->isActive();
+}
+
 void MainWindow::updateUndoActions() {
     act_["undo"]->setText(doc_->canUndo() ? "&Undo " + doc_->undoName() : "&Undo");
     act_["redo"]->setText(doc_->canRedo() ? "&Redo " + doc_->redoName() : "&Redo");
@@ -555,6 +617,7 @@ void MainWindow::syncViewToggles() {
     set("fs_textured", s.faceStyle == FaceStyle::ShadedTextured);
     set("fs_mono", s.faceStyle == FaceStyle::Monochrome);
     set("parallel", !doc_->model.camera.perspective);
+    set("twopoint", doc_->model.camera.perspective && doc_->model.camera.twoPoint);
     set("perspective", doc_->model.camera.perspective);
 }
 
@@ -677,7 +740,10 @@ bool MainWindow::openFile(const QString& path) {
     }
     addRecent(path);
     view_->setTool("select");
-    if (!doc_->model.scenes.empty()) view_->animateTo(doc_->model.scenes[0].cam, 1);
+    if (!doc_->model.scenes.empty()) {
+        if (doc_->model.scenes[0].matchPhoto) doc_->model.shownPhoto = 0;
+        view_->animateTo(doc_->model.scenes[0].cam, 1);
+    }
     view_->update();
     return true;
 }

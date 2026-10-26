@@ -299,8 +299,28 @@ struct UnitSettings {
     bool angleSnapOn = true;
 };
 
+// A photograph the camera was matched to: the picture and the grips placed on it, in picture
+// coordinates (0..1 across and down). Lines 0/1 run along the red axis, 2/3 along the green.
+struct MatchPhoto {
+    QByteArray image;            // PNG or JPEG bytes as imported
+    Vec2 lines[4][2];
+    Vec2 origin{0.5, 0.75};
+    double eyeHeight = 1600;     // mm above the ground
+    bool turned = false;         // red and green axes point the other way (turned 180° about blue)
+    MatchPhoto();
+};
+
+// Vanishing points of the red and green line pairs, in picture coordinates; false when a pair
+// is parallel. aspect = picture width / height.
+bool matchPhotoVanishing(const MatchPhoto& p, double aspect, Vec2& red, Vec2& green);
+// The camera that sees the picture: orientation and lens from the two vanishing points, the
+// position from the origin grip and the eye height. The picture fills the view's height.
+bool solveMatchPhoto(const MatchPhoto& p, double aspect, CameraState& out, QString* why = nullptr);
+
 struct Scene {
     QString name, description;
+    bool matchPhoto = false;
+    MatchPhoto photo;
     CameraState cam;
     std::vector<bool> tagVisible;
     Style style;
@@ -325,6 +345,10 @@ public:
     QString author, description;
     Vec3 axesOrigin;  // drawing axes (Axes tool)
     Vec3 axesX{1, 0, 0}, axesY{0, 1, 0}, axesZ{0, 0, 1};
+    // scene whose matched photo is behind the view while the camera is still at that scene's
+    // camera (not saved)
+    int shownPhoto = -1;
+    const Scene* photoInView() const;
 
     void reset();
     Entities& ents(int defIndex) { return defIndex < 0 ? root : defs[defIndex].ents; }

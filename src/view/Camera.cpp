@@ -24,9 +24,44 @@ void Camera::fitClip(const BBox& scene) {
     }
 }
 
+static Vec3 levelOf(const Vec3& f) {
+    Vec3 h(f.x, f.y, 0);
+    return h.length() < 1e-9 ? Vec3(0, 1, 0) : h.normalized();
+}
+
+double Camera::lensShift() const {
+    if (!twoPoint()) return 0;
+    double pitch = std::asin(std::clamp(forward().z, -1.0, 1.0));
+    pitch = std::clamp(pitch, -80 * kPi / 180, 80 * kPi / 180);
+    return std::tan(pitch) / std::tan(s->fov * kPi / 360);
+}
+
+void Camera::frame(Vec3& f, Vec3& r, Vec3& u) const {
+    if (twoPoint()) {
+        f = levelOf(forward());
+        r = f.cross(Vec3(0, 0, 1)).normalized();
+        u = Vec3(0, 0, 1);
+        return;
+    }
+    f = forward();
+    r = right();
+    u = upv();
+}
+
+Mat4 Camera::view() const {
+    if (twoPoint()) return Mat4::lookAt(s->eye, s->eye + levelOf(forward()), Vec3(0, 0, 1));
+    return Mat4::lookAt(s->eye, s->target, s->up);
+}
+
 Mat4 Camera::proj() const {
     double aspect = h > 0 ? (double)w / h : 1;
-    if (s->perspective) return Mat4::perspective(s->fov * kPi / 180, aspect, nearZ, farZ);
+    if (s->perspective) {
+        Mat4 p = Mat4::perspective(s->fov * kPi / 180, aspect, nearZ, farZ);
+        double sh = lensShift();
+        if (sh != 0)
+            for (int c = 0; c < 4; ++c) p.at(1, c) -= sh * p.at(3, c);   // y_clip -= shift * w_clip
+        return p;
+    }
     double hh = s->orthoHeight * 0.5, ww = hh * aspect;
     return Mat4::ortho(-ww, ww, -hh, hh, -farZ, farZ);
 }
@@ -34,10 +69,12 @@ Mat4 Camera::proj() const {
 Ray Camera::ray(double x, double y) const {
     double nx = 2 * x / w - 1, ny = 1 - 2 * y / h;
     double aspect = h > 0 ? (double)w / h : 1;
-    Vec3 f = forward(), r = right(), u = upv();
+    Vec3 f, r, u;
+    frame(f, r, u);
     Ray ry;
     if (s->perspective) {
         double t = std::tan(s->fov * kPi / 360);
+        ny += lensShift();
         ry.o = s->eye;
         ry.d = (f + r * (nx * t * aspect) + u * (ny * t)).normalized();
     } else {
@@ -50,7 +87,8 @@ Ray Camera::ray(double x, double y) const {
 
 bool Camera::project(const Vec3& p, double& sx, double& sy, double* depth) const {
     Vec3 d = p - s->eye;
-    Vec3 f = forward(), r = right(), u = upv();
+    Vec3 f, r, u;
+    frame(f, r, u);
     double z = d.dot(f);
     double aspect = h > 0 ? (double)w / h : 1;
     double nx, ny;
@@ -58,7 +96,7 @@ bool Camera::project(const Vec3& p, double& sx, double& sy, double* depth) const
         if (z <= 1e-6) return false;
         double t = std::tan(s->fov * kPi / 360);
         nx = d.dot(r) / (z * t * aspect);
-        ny = d.dot(u) / (z * t);
+        ny = d.dot(u) / (z * t) - lensShift();
     } else {
         double hh = s->orthoHeight * 0.5;
         nx = d.dot(r) / (hh * aspect);
@@ -72,11 +110,14 @@ bool Camera::project(const Vec3& p, double& sx, double& sy, double* depth) const
 
 double Camera::pixelSize(const Vec3& p) const {
     if (!s->perspective) return s->orthoHeight / std::max(h, 1);
-    double z = std::max((p - s->eye).dot(forward()), 1e-3);
+    Vec3 f, r, u;
+    frame(f, r, u);
+    double z = std::max((p - s->eye).dot(f), 1e-3);
     return 2 * z * std::tan(s->fov * kPi / 360) / std::max(h, 1);
 }
 
 void Camera::orbit(double dx, double dy, const Vec3& pivot) {
+    s->twoPoint = false;
     // Turntable orbit with the blue axis kept vertical. Heading and pitch are tracked
     // explicitly so looking straight down or up (top/bottom views) stays stable.
     const double k = 0.0065;   // radians per pixel
@@ -110,6 +151,7 @@ void Camera::orbit(double dx, double dy, const Vec3& pivot) {
 }
 
 void Camera::orbitFree(double dx, double dy, const Vec3& pivot) {
+    s->twoPoint = false;
     // Ctrl: no gravity — turn about the camera's own up and right axes, so the view can roll
     // over the top and look up from below
     const double k = 0.0065;
@@ -125,7 +167,9 @@ void Camera::orbitFree(double dx, double dy, const Vec3& pivot) {
 
 void Camera::pan(double dx, double dy, const Vec3& pivot) {
     double px = pixelSize(pivot);
-    Vec3 off = right() * (-dx * px) + upv() * (dy * px);
+    Vec3 f, r, u;
+    frame(f, r, u);
+    Vec3 off = r * (-dx * px) + u * (dy * px);
     s->eye += off;
     s->target += off;
 }
@@ -201,6 +245,7 @@ void Camera::zoomBox(double x0, double y0, double x1, double y1, const Vec3& dep
 }
 
 void Camera::lookAround(double dx, double dy) {
+    s->twoPoint = false;
     Vec3 z(0, 0, 1);
     double d = distance();
     Mat4 ry = Mat4::rotationAbout(s->eye, z, -dx * 0.004);
@@ -215,6 +260,7 @@ void Camera::lookAround(double dx, double dy) {
 }
 
 void Camera::setView(const Vec3& dir, const Vec3& up, const BBox& b) {
+    s->twoPoint = false;
     s->up = up;
     Vec3 c = b.valid() ? b.center() : s->target;
     double d = std::max(distance(), 1000.0);

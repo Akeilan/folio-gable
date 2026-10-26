@@ -49,6 +49,8 @@ static QString iconFor(const QString& id) {
         {"lock", "lock"}, {"unlock", "unlock"}, {"hide", "hide"}, {"explode", "explode"}, {"cut", "cut"},
         {"copy", "copy"}, {"paste", "paste"}, {"delete", "delete"}, {"addscene", "addscene"},
         {"nextscene", "nextscene"}, {"prevscene", "prevscene"}, {"perspective", "perspective"}, {"parallel", "parallel"},
+        {"twopoint", "twopoint"}, {"matchphoto", "matchphoto"}, {"matchphoto_edit", "matchphoto"}, {"matchphoto_done", "matchphoto"},
+        {"matchphoto_turn", "matchphoto"},
     };
     auto it = m.find(id);
     if (it != m.end()) return it->second;
@@ -129,6 +131,11 @@ static const std::map<QString, QString>& descriptions() {
         {"parallel", "Show the model without perspective, like a technical drawing."},
         {"perspective", "Show the model in perspective, as the eye sees it."},
         {"fov", "Set how wide the camera sees."},
+        {"twopoint", "Keep vertical lines vertical, like an architectural photo. Orbiting turns it off."},
+        {"matchphoto", "Match the camera to a photograph: place lines on its edges and model over the picture."},
+        {"matchphoto_edit", "Move the grips of the matched photo shown in the view."},
+        {"matchphoto_done", "Finish placing the grips and keep the matched camera."},
+        {"matchphoto_turn", "Turn the red and green axes of the matched photo around by 180 degrees."},
         {"zoomextents", "Zoom out or in so the whole model fits the window."},
         {"zoomsel", "Zoom so the selection fills the window."},
         {"alignview", "Look straight at the selected face."},
@@ -654,7 +661,11 @@ void MainWindow::buildRibbon() {
         g = t->group("Projection");
         g->large(A("perspective"), "Perspective", "perspective");
         g->large(A("parallel"), "Parallel Projection", "parallel");
+        g->large(A("twopoint"), "Two-Point", "twopoint");
         g->column({A("fov")});
+        g = t->group("Match Photo");
+        g->large(A("matchphoto"), "Match Photo", "matchphoto");
+        g->column({A("matchphoto_edit"), A("matchphoto_done"), A("matchphoto_turn")});
         g = t->group("Walkthrough");
         g->large(T("poscam"), "Position Camera", "poscam");
         g->large(T("walk"), "Walk", "walk");

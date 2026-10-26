@@ -440,6 +440,52 @@ private:
     void finish(bool keep);
 };
 
+// Match Photo: two pairs of lines placed on edges in the photo that run along the red and the
+// green axes, and the origin grip, give the camera that took it (with the eye height typed in).
+class MatchPhotoTool : public Tool {
+    friend class Auditor;
+public:
+    explicit MatchPhotoTool(Viewport* v) : Tool(v) {}
+    QString id() const override { return "matchphoto"; }
+    QString title() const override { return "Match Photo"; }
+    // edit scene `scene`, or (scene < 0) a new one made from the picture bytes
+    void start(int scene, const QByteArray& newImage = QByteArray(), const QString& newName = QString());
+    void activate() override;
+    void deactivate() override { finish(true); }
+    void reset() override { finish(false); toSelectTool(); }
+    void mousePress(const MouseEv& e) override;
+    void mouseRelease(const MouseEv& e) override;
+    void mouseMove(const MouseEv& e) override;
+    bool keyPress(QKeyEvent* e) override;
+    void vcbEnter(const QString& s) override;
+    QString vcbLabel() const override { return "Eye height"; }
+    void draw(Overlay& ov) override;
+    QString status() const override;
+    QCursor cursor() const override { return drag_ >= 0 ? Qt::ClosedHandCursor : (hot_ >= 0 ? Qt::OpenHandCursor : Qt::ArrowCursor); }
+    bool busy() const override { return active_; }
+    bool isActive() const { return active_; }
+    int scene() const { return scene_; }
+    void turnAxes();
+    void finish(bool keep);
+    // test hooks: grip k on screen (0..7 line ends: line k/2, end k%2; 8 the origin)
+    QPointF gripScreen(int k) const;
+    QString problem() const { return problem_; }
+private:
+    int scene_ = -1;
+    QByteArray newImage_;
+    QString newName_;
+    CameraState startCam_;   // put back on cancel (undo leaves the camera alone)
+    bool active_ = false;
+    int drag_ = -1, hot_ = -1;
+    double aspect_ = 1;
+    QString problem_;
+    MatchPhoto& photo();
+    Vec2 toPhoto(double x, double y) const;
+    QPointF toScreen(const Vec2& q) const;
+    int gripAt(double x, double y) const;
+    void solve();
+};
+
 class TapeTool : public InferTool {
 public:
     explicit TapeTool(Viewport* v, bool protractor) : InferTool(v), protractor_(protractor) {}
