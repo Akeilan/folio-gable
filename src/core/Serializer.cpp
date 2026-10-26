@@ -7,7 +7,7 @@
 namespace gable {
 
 static const quint32 kMagic = 0x4742414C;  // "GBAL"
-static const quint32 kVersion = 4;   // 4: texture mappings carry the "projected" flag
+static const quint32 kVersion = 5;   // 4: texture mappings carry the "projected" flag; 5: edge style settings
 static quint32 gReadVersion = kVersion;
 
 static QDataStream& operator<<(QDataStream& s, const Vec3& v) { return s << v.x << v.y << v.z; }
@@ -181,6 +181,8 @@ static void writeStyle(QDataStream& s, const Style& st) {
       << st.groundTransparency << st.showGuides << st.showHidden << st.showAxes << st.showSectionPlanes
       << st.showSectionCuts << st.sectionFill << st.sectionFillColor << st.fog << st.fogStart << st.fogEnd << st.fogColor
       << st.name;
+    s << st.halo << (qint32)st.extensionLength << (qint32)st.endpointLength << (qint32)st.jitterAmount << (qint32)st.depthCueWidth
+      << (qint32)st.haloGap;
 }
 static void readStyle(QDataStream& s, Style& st) {
     qint32 fs, pw;
@@ -191,6 +193,15 @@ static void readStyle(QDataStream& s, Style& st) {
       >> st.fogStart >> st.fogEnd >> st.fogColor >> st.name;
     st.faceStyle = (FaceStyle)fs;
     st.profileWidth = pw;
+    if (gReadVersion >= 5) {
+        qint32 el, en, ja, dc, hg;
+        s >> st.halo >> el >> en >> ja >> dc >> hg;
+        st.extensionLength = std::clamp((int)el, 1, 40);
+        st.endpointLength = std::clamp((int)en, 1, 40);
+        st.jitterAmount = std::clamp((int)ja, 1, 10);
+        st.depthCueWidth = std::clamp((int)dc, 1, 12);
+        st.haloGap = std::clamp((int)hg, 1, 20);
+    }
 }
 static void writeShadow(QDataStream& s, const ShadowSettings& sh) {
     s << sh.enabled << (qint32)sh.month << (qint32)sh.day << sh.hour << sh.utcOffset << sh.latitude << sh.longitude

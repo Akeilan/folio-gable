@@ -82,6 +82,9 @@ private:
     const Params* P = nullptr;
     Document* D = nullptr;
     Mat4 vp_, lightVP_;
+    float cueNear_ = 0, cueFar_ = 1;   // depth cue range this frame
+    bool haloPass_ = false;
+    float haloOrtho_ = 0;
     bool hasClip_ = false;
     Plane clip_;
     Vec3 lightDir_;

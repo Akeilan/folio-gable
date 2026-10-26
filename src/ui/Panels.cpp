@@ -1460,10 +1460,45 @@ StylesPanel::StylesPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d
     auto* eg = new QGridLayout(er);
     eg->setContentsMargins(0, 0, 0, 0);
     eg->addWidget(edges_, 0, 0); eg->addWidget(backEdges_, 0, 1);
-    eg->addWidget(profiles_, 1, 0); eg->addWidget(profileW_, 1, 1);
-    eg->addWidget(extension_, 2, 0); eg->addWidget(byAxis_, 2, 1);
-    eg->addWidget(byTag_, 3, 0);
+    eg->addWidget(byAxis_, 1, 0, 1, 2);
+    eg->addWidget(byTag_, 2, 0, 1, 2);
     form->addRow("Edges:", er);
+    // edge effects: a check box and an amount in pixels each
+    endpoints_ = new QCheckBox("Endpoints");
+    jitter_ = new QCheckBox("Jitter");
+    depthCue_ = new QCheckBox("Depth cue");
+    halo_ = new QCheckBox("Halo");
+    auto px = [](int lo, int hi, const QString& tip) {
+        auto* sb = new QSpinBox;
+        sb->setRange(lo, hi);
+        sb->setSuffix(" px");
+        sb->setToolTip(tip);
+        return sb;
+    };
+    extLen_ = px(1, 40, "How far edges run past their ends");
+    endLen_ = px(1, 40, "Length of the thicker part at each end of an edge");
+    jitterAmt_ = px(1, 10, "How far the sketchy strokes wander from the edge");
+    cueW_ = px(1, 12, "Width of the nearest edges; the farthest are one pixel");
+    haloGap_ = px(1, 20, "Gap left where an edge passes behind a nearer one");
+    profileW_->setSuffix(" px");
+    profileW_->setToolTip("Width of profile edges (outlines)");
+    extension_->setToolTip("Let edges run slightly past their ends, like a sketch");
+    endpoints_->setToolTip("Draw edges thicker at their ends, like a pen stroke");
+    jitter_->setToolTip("Draw each edge as several slightly wandering strokes");
+    depthCue_->setToolTip("Draw near edges thicker than far ones");
+    halo_->setToolTip("Break an edge where it passes behind a nearer one");
+    auto* fx = new QWidget;
+    auto* fg = new QGridLayout(fx);
+    fg->setContentsMargins(0, 0, 0, 0);
+    fg->setColumnStretch(0, 1);
+    int r = 0;
+    for (auto [c, sb] : std::initializer_list<std::pair<QCheckBox*, QSpinBox*>>{
+             {profiles_, profileW_}, {extension_, extLen_}, {endpoints_, endLen_}, {jitter_, jitterAmt_}, {depthCue_, cueW_}, {halo_, haloGap_}}) {
+        fg->addWidget(c, r, 0);
+        fg->addWidget(sb, r, 1);
+        ++r;
+    }
+    form->addRow("Effects:", fx);
     edgeC_ = new ColorButton;
     front_ = new ColorButton;
     back_ = new ColorButton;
@@ -1479,9 +1514,11 @@ StylesPanel::StylesPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d
     form->addRow("Back face:", back_);
     form->addRow("Background:", bg_);
     auto* sr = new QWidget;
-    auto* sl = new QHBoxLayout(sr);
+    auto* sl = new QGridLayout(sr);
     sl->setContentsMargins(0, 0, 0, 0);
-    sl->addWidget(sky_); sl->addWidget(skyC_); sl->addWidget(ground_); sl->addWidget(groundC_);
+    sl->addWidget(sky_, 0, 0); sl->addWidget(skyC_, 0, 1);
+    sl->addWidget(ground_, 1, 0); sl->addWidget(groundC_, 1, 1);
+    sl->setColumnStretch(2, 1);
     form->addRow("", sr);
     auto* gr = new QWidget;
     auto* gl = new QHBoxLayout(gr);
@@ -1499,6 +1536,21 @@ StylesPanel::StylesPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d
         s.profiles = profiles_->isChecked();
         s.profileWidth = profileW_->value();
         s.extension = extension_->isChecked();
+        s.endpoints = endpoints_->isChecked();
+        s.jitter = jitter_->isChecked();
+        s.depthCue = depthCue_->isChecked();
+        s.halo = halo_->isChecked();
+        s.extensionLength = extLen_->value();
+        s.endpointLength = endLen_->value();
+        s.jitterAmount = jitterAmt_->value();
+        s.depthCueWidth = cueW_->value();
+        s.haloGap = haloGap_->value();
+        extLen_->setEnabled(s.extension);
+        endLen_->setEnabled(s.endpoints);
+        jitterAmt_->setEnabled(s.jitter);
+        cueW_->setEnabled(s.depthCue);
+        haloGap_->setEnabled(s.halo);
+        profileW_->setEnabled(s.profiles);
         s.colorByAxis = byAxis_->isChecked();
         s.colorByTag = byTag_->isChecked();
         s.edgeColor = edgeC_->color();
@@ -1517,10 +1569,11 @@ StylesPanel::StylesPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d
         updating_ = false;
         emit styleChanged();
     };
-    for (auto* c : {xray_, edges_, backEdges_, profiles_, extension_, byAxis_, byTag_, sky_, ground_, guides_, axes_})
+    for (auto* c : {xray_, edges_, backEdges_, profiles_, extension_, endpoints_, jitter_, depthCue_, halo_, byAxis_, byTag_, sky_, ground_, guides_, axes_})
         connect(c, &QCheckBox::toggled, this, changed);
     connect(faceStyle_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, changed);
-    connect(profileW_, QOverload<int>::of(&QSpinBox::valueChanged), this, changed);
+    for (auto* sb : {profileW_, extLen_, endLen_, jitterAmt_, cueW_, haloGap_})
+        connect(sb, QOverload<int>::of(&QSpinBox::valueChanged), this, changed);
     for (auto* c : {edgeC_, front_, back_, bg_, skyC_, groundC_}) connect(c, &ColorButton::colorChanged, this, changed);
     connect(preset_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int i) {
         if (updating_ || i <= 0) return;
@@ -1533,7 +1586,10 @@ StylesPanel::StylesPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d
         case 5: s.faceStyle = FaceStyle::HiddenLine; s.showSky = false; break;
         case 6: s.faceStyle = FaceStyle::HiddenLine; s.background = QColor(30, 70, 140); s.edgeColor = QColor(235, 240, 255); s.showSky = false; s.profiles = true; break;
         case 7: s.faceStyle = FaceStyle::Monochrome; s.showSky = false; break;
-        case 8: s.profileWidth = 4; s.extension = true; s.frontColor = QColor(255, 252, 240); s.background = QColor(255, 253, 245); s.showSky = false; break;
+        case 8:
+            s.profileWidth = 4; s.extension = true; s.extensionLength = 8; s.endpoints = true; s.jitter = true; s.halo = true;
+            s.frontColor = QColor(255, 252, 240); s.background = QColor(255, 253, 245); s.showSky = false;
+            break;
         case 9: s.xray = true; s.backEdges = false; break;
         }
         s.name = preset_->currentText();
@@ -1565,6 +1621,21 @@ void StylesPanel::refresh() {
     profiles_->setChecked(s.profiles);
     profileW_->setValue(s.profileWidth);
     extension_->setChecked(s.extension);
+    endpoints_->setChecked(s.endpoints);
+    jitter_->setChecked(s.jitter);
+    depthCue_->setChecked(s.depthCue);
+    halo_->setChecked(s.halo);
+    extLen_->setValue(s.extensionLength);
+    endLen_->setValue(s.endpointLength);
+    jitterAmt_->setValue(s.jitterAmount);
+    cueW_->setValue(s.depthCueWidth);
+    haloGap_->setValue(s.haloGap);
+    extLen_->setEnabled(s.extension);
+    endLen_->setEnabled(s.endpoints);
+    jitterAmt_->setEnabled(s.jitter);
+    cueW_->setEnabled(s.depthCue);
+    haloGap_->setEnabled(s.halo);
+    profileW_->setEnabled(s.profiles);
     byAxis_->setChecked(s.colorByAxis);
     byTag_->setChecked(s.colorByTag);
     edgeC_->setColor(s.edgeColor);
