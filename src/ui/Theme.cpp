@@ -37,7 +37,7 @@ QLineEdit#folioSearch:focus { background: #ffffff; color: #222222; }
 /* ribbon tabs */
 #folioTabs { background: @ribbon_bg; }
 #folioTabs QToolButton { background: transparent; border: none; border-bottom: 3px solid transparent;
-  color: @ribbon_fg; padding: 5px 10px 3px 10px; font-size: 9.5pt; }
+  color: @ribbon_fg; padding: 6px 10px 4px 10px; font-size: 9.5pt; }
 #folioTabs QToolButton:hover { background: @hover_bg; }
 #folioTabs QToolButton[active="true"] { border-bottom: 3px solid @accent; color: @accent; font-weight: bold; }
 #folioTabs QToolButton[contextual="true"] { color: #8a4a00; }

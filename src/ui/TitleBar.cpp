@@ -45,7 +45,7 @@ static QIcon glyph(int kind) {
 TitleBar::TitleBar(QWidget* window) : QWidget(window), win_(window) {
     setObjectName("folioTitleBar");
     setAttribute(Qt::WA_StyledBackground);
-    setFixedHeight(34);
+    setFixedHeight(40);   // suite spec: title bar 40 px
     auto* h = new QHBoxLayout(this);
     h->setContentsMargins(4, 0, 0, 0);
     h->setSpacing(0);
@@ -66,7 +66,7 @@ TitleBar::TitleBar(QWidget* window) : QWidget(window), win_(window) {
     search_ = new QLineEdit;
     search_->setObjectName("folioSearch");
     search_->setPlaceholderText("Search (Alt+Q)");
-    search_->setFixedWidth(260);
+    search_->setFixedWidth(240);
     search_->setClearButtonEnabled(true);
     search_->addAction(theme::whiteIcon("search", 14), QLineEdit::LeadingPosition);
     h->addWidget(search_);
@@ -80,7 +80,7 @@ TitleBar::TitleBar(QWidget* window) : QWidget(window), win_(window) {
     close_->setIcon(glyph(3));
     for (auto* b : {min_, max_, close_}) {
         b->setIconSize(QSize(10, 10));
-        b->setFixedSize(46, 34);
+        b->setFixedSize(46, 40);
         b->setFocusPolicy(Qt::NoFocus);
         h->addWidget(b);
     }
