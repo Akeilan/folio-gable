@@ -18,6 +18,8 @@
 #include "tools/Tools.h"
 #include <QAbstractButton>
 #include <QBuffer>
+#include <QMimeData>
+#include <QClipboard>
 #include <QApplication>
 #include <QDialog>
 #include <QLineF>
@@ -1338,6 +1340,34 @@ private:
         reset();
     }
 
+    void sCopyView() {
+        begin("copy view as picture");
+        reset();
+        box(2000, 1500, 1000);
+        QApplication::clipboard()->clear();
+        act("copyview");
+        settle(100);
+        const QMimeData* md = QApplication::clipboard()->mimeData();
+        QImage img = QApplication::clipboard()->image();
+        double dpr = v->devicePixelRatioF();
+        check(!img.isNull() && img.width() == (int)std::lround(v->width() * dpr) && img.height() == (int)std::lround(v->height() * dpr),
+              QString("the view's picture is on the clipboard (%1 x %2)").arg(img.width()).arg(img.height()));
+        check(md && md->hasImage(), "offered as an image other programs can paste");
+        QPointF c = scr(Vec3(1000, 0, 500));
+        QColor face = img.isNull() ? QColor() : QColor(img.pixel((c * dpr).toPoint()));
+        check(face.isValid() && face != d->model.style.background && face.lightness() < 245, "showing the model: " + face.name());
+        if (qEnvironmentVariableIsSet("GABLE_CLIP_SERVE")) {
+            // keep the clipboard for another program to paste (the cross-program test)
+            QString dir = qEnvironmentVariable("GABLE_CLIP_SERVE");
+            QFile r(dir + "/gable.ready");
+            if (r.open(QIODevice::WriteOnly)) r.write(QString("%1 %2\n").arg(img.width()).arg(img.height()).toUtf8());
+            r.close();
+            QElapsedTimer t;
+            t.start();
+            while (!QFile::exists(dir + "/gable.done") && t.elapsed() < 120000) settle(50);
+        }
+    }
+
     void sTextures() {
         begin("texture: position, reset, rotate, flip, projected, follows moves");
         reset();
@@ -1765,7 +1795,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1798,6 +1828,7 @@ int Auditor::run() {
     sEdgeStyles();
     sMatchPhoto();
     sSolidInspector();
+    sCopyView();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();

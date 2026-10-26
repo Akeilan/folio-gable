@@ -69,6 +69,7 @@ static const std::map<QString, QString>& descriptions() {
         {"exportobj", "Save the model as a Wavefront OBJ file with its materials."},
         {"exportgltf", "Save the model as glTF for Blender, game engines and the web."},
         {"export3mf", "Save the model as 3MF for 3D printing, with colours."},
+        {"copyview", "Copy what the view shows as a picture, to paste into Draw, Sheets or other programs."},
         {"solidinspector", "Show why the selected group isn't a solid (holes, stray edges, reversed faces) and fix it."},
         {"export2d", "Save the current view as a PNG or JPEG image at any size."},
         {"print", "Print the current view."},
@@ -531,6 +532,7 @@ void MainWindow::buildRibbon() {
         RibbonGroup* g = t->group("Clipboard");
         g->largeMenu("Paste", "paste", pasteMenu, A("paste"));
         g->column({A("cut"), A("copy"), A("delete")});
+        g->column({A("copyview")});
         g = t->group("Select");
         g->large(T("select"), "Select", "select");
         g->column({A("selectall"), A("selectnone"), A("invertsel")});

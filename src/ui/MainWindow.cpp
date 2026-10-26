@@ -13,6 +13,7 @@
 #include "view/Viewport.h"
 #include <QApplication>
 #include <QBuffer>
+#include <QClipboard>
 #include <QDialog>
 #include <QDockWidget>
 #include <QPlainTextEdit>
@@ -254,6 +255,13 @@ void MainWindow::buildActions() {
     act_["redo"]->setShortcuts({QKeySequence("Ctrl+Y"), QKeySequence("Ctrl+Shift+Z")});
     addAct("cut", "Cu&t", QKeySequence::Cut, [this] { copy(true); });
     addAct("copy", "&Copy", QKeySequence::Copy, [this] { copy(false); });
+    addAct("copyview", "Copy View as Picture", QKeySequence("Ctrl+Shift+C"), [this] {
+        // what the view shows, for pasting into Draw, Sheets or any other program
+        double dpr = view_->devicePixelRatioF();
+        QImage img = view_->renderImage(std::max(1, (int)std::lround(view_->width() * dpr)), std::max(1, (int)std::lround(view_->height() * dpr)), false);
+        QApplication::clipboard()->setImage(img.convertToFormat(QImage::Format_RGB32));
+        statusBar()->showMessage("The view is on the Clipboard as a picture", 4000);
+    }, "copy");
     addAct("paste", "&Paste", QKeySequence::Paste, [this] { paste(false); });
     addAct("pasteinplace", "Paste In Place", QKeySequence(), [this] { paste(true); });
     addAct("delete", "&Delete", QKeySequence::Delete, [this] {
