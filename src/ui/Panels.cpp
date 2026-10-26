@@ -3,6 +3,12 @@
 #include "core/Solids.h"
 #include "view/Viewport.h"
 #include "ui/Icons.h"
+#include "core/Serializer.h"
+#include <QDir>
+#include <QFile>
+#include <QSaveFile>
+#include <QSignalBlocker>
+#include <QStandardPaths>
 #include <QDate>
 #include <QFileInfo>
 #include <QBuffer>
@@ -696,6 +702,11 @@ QIcon MaterialsPanel::swatch(const Material& m) const {
         if (!img.isNull()) {
             p.setOpacity(m.alpha);
             p.drawImage(QRect(0, 0, 48, 48), img);
+            if (m.colorize) {
+                QColor c = m.color;
+                c.setAlpha(110);
+                p.fillRect(0, 0, 48, 48, c);
+            }
             p.setOpacity(1);
         }
     } else {
@@ -708,6 +719,110 @@ QIcon MaterialsPanel::swatch(const Material& m) const {
     return QIcon(pm);
 }
 
+static QByteArray pngBytes(const QImage& img) {
+    QByteArray png;
+    QBuffer b(&png);
+    b.open(QIODevice::WriteOnly);
+    img.save(&b, "PNG");
+    return png;
+}
+
+static bool sameMaterial(const Material& a, const Material& b) {
+    return a.color.rgb() == b.color.rgb() && std::abs(a.alpha - b.alpha) < 1e-9 && a.hasTexture == b.hasTexture &&
+           a.texturePng == b.texturePng && std::abs(a.texW - b.texW) < 1e-6 && std::abs(a.texH - b.texH) < 1e-6 &&
+           a.colorize == b.colorize;
+}
+
+QString MaterialsPanel::collectionsDir() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/materials";
+}
+
+bool MaterialsPanel::readCollection(const QString& path, std::vector<Material>& out, QString* err) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    Model m;
+    QString e;
+    if (!loadModel(m, f.readAll(), &e)) {
+        if (err) *err = e.isEmpty() ? "Not a material collection." : e;
+        return false;
+    }
+    out = m.materials;
+    return true;
+}
+
+bool MaterialsPanel::exportCollection(const QString& path, const std::vector<int>& which, QString* err) const {
+    Model m;
+    m.units = doc_->model.units;
+    for (int i : which)
+        if (i >= 0 && i < (int)doc_->model.materials.size()) m.materials.push_back(doc_->model.materials[i]);
+    if (m.materials.empty()) {
+        if (err) *err = "There are no materials to export.";
+        return false;
+    }
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    f.write(saveModel(m));
+    if (!f.commit()) {
+        if (err) *err = f.errorString();
+        return false;
+    }
+    return true;
+}
+
+void MaterialsPanel::rescanCollections() {
+    QSignalBlocker block(source_);
+    int was = source_->currentIndex();
+    QString wasFile = was >= 3 && was - 3 < collectionFiles_.size() ? collectionFiles_[was - 3] : QString();
+    while (source_->count() > 3) source_->removeItem(3);
+    collectionFiles_.clear();
+    QDir dir(collectionsDir());
+    for (const QFileInfo& fi : dir.entryInfoList({"*.gmat"}, QDir::Files, QDir::Name | QDir::IgnoreCase)) {
+        collectionFiles_ << fi.absoluteFilePath();
+        source_->addItem(fi.completeBaseName());
+    }
+    int i = wasFile.isEmpty() ? was : 3 + (int)collectionFiles_.indexOf(wasFile);
+    source_->setCurrentIndex(i >= 0 && i < source_->count() ? i : 0);
+}
+
+bool MaterialsPanel::importCollection(const QString& path, QString* err) {
+    std::vector<Material> mats;
+    if (!readCollection(path, mats, err)) return false;
+    if (mats.empty()) {
+        if (err) *err = "The collection holds no materials.";
+        return false;
+    }
+    QDir().mkpath(collectionsDir());
+    QString base = QFileInfo(path).completeBaseName();
+    QString dst = collectionsDir() + "/" + base + ".gmat";
+    if (QFileInfo(dst).absoluteFilePath() != QFileInfo(path).absoluteFilePath()) {
+        for (int n = 2; QFile::exists(dst); ++n) dst = QString("%1/%2 (%3).gmat").arg(collectionsDir(), base).arg(n);
+        if (!QFile::copy(path, dst)) {
+            if (err) *err = "Couldn't copy the collection into " + collectionsDir();
+            return false;
+        }
+    }
+    rescanCollections();
+    int i = collectionFiles_.indexOf(QFileInfo(dst).absoluteFilePath());
+    showEditor(false);
+    source_->setCurrentIndex(3 + i);
+    return true;
+}
+
+bool MaterialsPanel::removeCollection(int src) {
+    int i = src - 3;
+    if (i < 0 || i >= collectionFiles_.size()) return false;
+    if (!QFile::remove(collectionFiles_[i])) return false;
+    source_->setCurrentIndex(0);
+    rescanCollections();
+    return true;
+}
+
 MaterialsPanel::MaterialsPanel(Document* d, QWidget* parent) : QWidget(parent), doc_(d) {
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
@@ -715,18 +830,18 @@ MaterialsPanel::MaterialsPanel(Document* d, QWidget* parent) : QWidget(parent), 
     currentSwatch_ = new QLabel;
     currentSwatch_->setFixedSize(40, 40);
     currentLabel_ = new QLabel("Default");
+    currentLabel_->setWordWrap(true);
     top->addWidget(currentSwatch_);
     top->addWidget(currentLabel_, 1);
     auto* newB = new QToolButton;
     newB->setText("+");
     newB->setToolTip("Create material");
-    auto* editB = new QToolButton;
-    editB->setText("Edit");
     auto* moreB = new QToolButton;
     moreB->setText("⋯");
+    moreB->setToolTip("More material commands");
     moreB->setPopupMode(QToolButton::InstantPopup);
     auto* more = new QMenu(moreB);
-    more->addAction("Delete current material", this, [this] {
+    QAction* delA = more->addAction("Delete current material", this, [this] {
         if (current_ < 0) return;
         int m = current_;
         doc_->begin("Delete Material");
@@ -773,34 +888,94 @@ MaterialsPanel::MaterialsPanel(Document* d, QWidget* parent) : QWidget(parent), 
         doc_->commit();
         setCurrent(-1);
     });
-    more->addAction("Import texture image…", this, [this] {
+    more->addAction("New material from texture image…", this, [this] {
         QString fn = QFileDialog::getOpenFileName(this, "Texture image", QString(), "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)");
         if (fn.isEmpty()) return;
         QImage img(fn);
         if (img.isNull()) return;
         doc_->begin("New Material");
         int m = doc_->model.addMaterial(QFileInfo(fn).completeBaseName(), QColor(200, 200, 200));
-        QByteArray png;
-        QBuffer b(&png);
-        b.open(QIODevice::WriteOnly);
-        img.save(&b, "PNG");
         Material& M = doc_->model.materials[m];
         M.hasTexture = true;
-        M.texturePng = png;
+        M.texturePng = pngBytes(img);
         M.texW = 1000;
         M.texH = 1000.0 * img.height() / std::max(1, img.width());
         doc_->commit();
+        source_->setCurrentIndex(0);
         setCurrent(m);
-        editMaterial(m);
+        showEditor(true);
+    });
+    more->addSeparator();
+    QAction* saveOneA = more->addAction("Save current material as a collection…", this, [this] {
+        if (current_ < 0) return;
+        QString fn = QFileDialog::getSaveFileName(this, "Save material", doc_->model.materials[current_].name + ".gmat",
+                                                  "Material collections (*.gmat)");
+        if (fn.isEmpty()) return;
+        if (!fn.endsWith(".gmat", Qt::CaseInsensitive)) fn += ".gmat";
+        QString err;
+        if (!exportCollection(fn, {current_}, &err)) QMessageBox::warning(this, "Save material", err);
+    });
+    QAction* exportA = more->addAction("Export materials in model as a collection…", this, [this] {
+        QString base = doc_->filePath.isEmpty() ? QString("Materials") : QFileInfo(doc_->filePath).completeBaseName() + " materials";
+        QString fn = QFileDialog::getSaveFileName(this, "Export material collection", base + ".gmat", "Material collections (*.gmat)");
+        if (fn.isEmpty()) return;
+        if (!fn.endsWith(".gmat", Qt::CaseInsensitive)) fn += ".gmat";
+        std::vector<int> all(doc_->model.materials.size());
+        for (size_t i = 0; i < all.size(); ++i) all[i] = (int)i;
+        QString err;
+        if (!exportCollection(fn, all, &err)) QMessageBox::warning(this, "Export material collection", err);
+    });
+    more->addAction("Import collection…", this, [this] {
+        QString fn = QFileDialog::getOpenFileName(this, "Import material collection", QString(), "Material collections (*.gmat)");
+        if (fn.isEmpty()) return;
+        QString err;
+        if (!importCollection(fn, &err)) QMessageBox::warning(this, "Import material collection", err);
+    });
+    QAction* removeA = more->addAction("Remove this collection", this, [this] {
+        int src = source_->currentIndex();
+        if (src < 3) return;
+        if (QMessageBox::question(this, "Remove collection",
+                                  QString("Remove the collection \"%1\" from this list? Materials already in models are kept.").arg(source_->currentText()))
+            != QMessageBox::Yes)
+            return;
+        removeCollection(src);
+    });
+    connect(more, &QMenu::aboutToShow, this, [=] {
+        bool has = current_ >= 0;
+        delA->setEnabled(has);
+        saveOneA->setEnabled(has);
+        exportA->setEnabled(!doc_->model.materials.empty());
+        removeA->setEnabled(source_->currentIndex() >= 3);
     });
     moreB->setMenu(more);
     top->addWidget(newB);
-    top->addWidget(editB);
     top->addWidget(moreB);
     lay->addLayout(top);
+
+    // Select | Edit
+    auto* tabs = new QHBoxLayout;
+    tabs->setSpacing(0);
+    selectTab_ = new QToolButton;
+    selectTab_->setText("Select");
+    editTab_ = new QToolButton;
+    editTab_->setText("Edit");
+    for (auto* b : {selectTab_, editTab_}) {
+        b->setCheckable(true);
+        b->setAutoExclusive(true);
+        b->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        tabs->addWidget(b);
+    }
+    selectTab_->setChecked(true);
+    lay->addLayout(tabs);
+
+    selectPage_ = new QWidget;
+    auto* sl = new QVBoxLayout(selectPage_);
+    sl->setContentsMargins(0, 0, 0, 0);
     source_ = new QComboBox;
     source_->addItems({"In Model", "Colors", "Textures"});
-    lay->addWidget(source_);
+    source_->setToolTip("Materials in this model, the built-in colours and textures, or a collection you imported");
+    sl->addWidget(source_);
     list_ = new QListWidget;
     list_->setViewMode(QListView::IconMode);
     list_->setIconSize(QSize(44, 44));
@@ -812,16 +987,30 @@ MaterialsPanel::MaterialsPanel(Document* d, QWidget* parent) : QWidget(parent), 
     QFont lf = list_->font();
     lf.setPointSizeF(lf.pointSizeF() * 0.85);
     list_->setFont(lf);
-    lay->addWidget(list_);
+    sl->addWidget(list_);
+    lay->addWidget(selectPage_);
+
+    editPage_ = new QWidget;
+    buildEditor();
+    editPage_->hide();
+    lay->addWidget(editPage_);
+
+    connect(selectTab_, &QToolButton::toggled, this, [this](bool on) { if (on) showEditor(false); });
+    connect(editTab_, &QToolButton::toggled, this, [this](bool on) { if (on) showEditor(true); });
     connect(source_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MaterialsPanel::refresh);
     connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* it) {
         int v = it->data(Qt::UserRole).toInt();
-        if (source_->currentIndex() == 0) setCurrent(v);
-        else addFromLibrary(v);
+        int src = source_->currentIndex();
+        if (src == 0) setCurrent(v);
+        else if (src < 3) addFromLibrary(v);
+        else addFromCollection(v);
         emit materialChosen(current_);
     });
     connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* it) {
-        if (source_->currentIndex() == 0 && it->data(Qt::UserRole).toInt() >= 0) editMaterial(it->data(Qt::UserRole).toInt());
+        if (source_->currentIndex() == 0 && it->data(Qt::UserRole).toInt() >= 0) {
+            setCurrent(it->data(Qt::UserRole).toInt());
+            showEditor(true);
+        }
     });
     connect(newB, &QToolButton::clicked, this, [this] {
         QColor c = QColorDialog::getColor(QColor(180, 180, 180), this, "New material", QColorDialog::ShowAlphaChannel);
@@ -835,13 +1024,264 @@ MaterialsPanel::MaterialsPanel(Document* d, QWidget* parent) : QWidget(parent), 
         setCurrent(m);
         emit materialChosen(m);
     });
-    connect(editB, &QToolButton::clicked, this, [this] { if (current_ >= 0) editMaterial(current_); });
     connect(d, &Document::changed, this, [this] {
         if (current_ >= (int)doc_->model.materials.size()) current_ = -1;
-        if (source_->currentIndex() == 0) refresh();
+        if (source_->currentIndex() == 0 && !dragging_) refresh();
+        if (!dragging_) setCurrent(current_);
     });
+    rescanCollections();
     refresh();
     setCurrent(-1);
+}
+
+void MaterialsPanel::buildEditor() {
+    auto* el = new QVBoxLayout(editPage_);
+    el->setContentsMargins(0, 4, 0, 0);
+    eNote_ = new QLabel("Pick a material in the model (or create one with +) to edit it. The Default material takes its colour from the style.");
+    eNote_->setWordWrap(true);
+    el->addWidget(eNote_);
+    eForm_ = new QWidget;
+    auto* form = new QFormLayout(eForm_);
+    form->setContentsMargins(0, 0, 0, 0);
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+    eName_ = new QLineEdit;
+    eName_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    form->addRow("Name:", eName_);
+    auto* colorRow = new QWidget;
+    auto* cl = new QHBoxLayout(colorRow);
+    cl->setContentsMargins(0, 0, 0, 0);
+    eColor_ = new ColorButton;
+    eResetColor_ = new QPushButton("Reset");
+    eResetColor_->setToolTip("Set the colour to the texture's average colour");
+    cl->addWidget(eColor_);
+    cl->addWidget(eResetColor_);
+    cl->addStretch(1);
+    form->addRow("Color:", colorRow);
+    eColorize_ = new QCheckBox("Colorize texture");
+    eColorize_->setToolTip("Tint the texture with the colour above");
+    form->addRow("", eColorize_);
+    auto* opRow = new QWidget;
+    auto* ol = new QHBoxLayout(opRow);
+    ol->setContentsMargins(0, 0, 0, 0);
+    eOpacity_ = new QSlider(Qt::Horizontal);
+    eOpacity_->setRange(0, 100);
+    eOpacity_->setMinimumWidth(40);
+    eOpacity_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    eOpacityN_ = new QSpinBox;
+    eOpacityN_->setRange(0, 100);
+    eOpacityN_->setSuffix(" %");
+    ol->addWidget(eOpacity_, 1);
+    ol->addWidget(eOpacityN_);
+    form->addRow("Opacity:", opRow);
+    auto* texRow = new QWidget;
+    auto* tg = new QGridLayout(texRow);
+    tg->setContentsMargins(0, 0, 0, 0);
+    eTexPreview_ = new QLabel;
+    eTexPreview_->setFixedSize(48, 48);
+    eTexPreview_->setFrameShape(QFrame::StyledPanel);
+    eTexPreview_->setAlignment(Qt::AlignCenter);
+    eTexInfo_ = new QLabel;
+    eTexInfo_->setWordWrap(true);
+    eLoad_ = new QPushButton("Load…");
+    eLoad_->setToolTip("Use a picture file as this material's texture");
+    eClear_ = new QPushButton("Remove");
+    eClear_->setToolTip("Remove the texture; the material keeps its colour");
+    eExportTex_ = new QPushButton("Save…");
+    eExportTex_->setToolTip("Save the texture image as a picture file");
+    auto* btns = new QHBoxLayout;
+    btns->setSpacing(4);
+    for (auto* b : {eLoad_, eClear_, eExportTex_}) {
+        b->setMinimumWidth(0);
+        b->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+        btns->addWidget(b, 1);
+    }
+    tg->addWidget(eTexPreview_, 0, 0);
+    tg->addWidget(eTexInfo_, 0, 1);
+    tg->addLayout(btns, 1, 0, 1, 2);
+    tg->setColumnStretch(1, 1);
+    form->addRow("Texture:", texRow);
+    auto* sizeRow = new QWidget;
+    auto* sz = new QHBoxLayout(sizeRow);
+    sz->setContentsMargins(0, 0, 0, 0);
+    eTexW_ = new QLineEdit;
+    eTexH_ = new QLineEdit;
+    for (auto* e : {eTexW_, eTexH_}) {
+        e->setMinimumWidth(40);
+        e->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    }
+    eTexW_->setToolTip("Width of one tile of the texture in the model");
+    eTexH_->setToolTip("Height of one tile of the texture in the model");
+    eLock_ = new QToolButton;
+    eLock_->setText("⛓");
+    eLock_->setCheckable(true);
+    eLock_->setChecked(true);
+    eLock_->setToolTip("Keep the picture's proportions");
+    sz->addWidget(eTexW_, 1);
+    sz->addWidget(new QLabel("×"));
+    sz->addWidget(eTexH_, 1);
+    sz->addWidget(eLock_);
+    form->addRow("Size:", sizeRow);
+    el->addWidget(eForm_);
+    el->addStretch(1);
+
+    connect(eName_, &QLineEdit::editingFinished, this, [this] {
+        if (updating_ || current_ < 0) return;
+        QString n = eName_->text().trimmed();
+        if (n.isEmpty() || n == doc_->model.materials[current_].name) { refreshEditor(); return; }
+        int other = doc_->model.findMaterial(n);
+        if (other >= 0 && other != current_) n = doc_->model.uniqueMaterialName(n);
+        applyEdit("Rename Material", [n](Material& M) { M.name = n; });
+    });
+    connect(eColor_, &ColorButton::colorChanged, this, [this](const QColor& c) {
+        if (updating_) return;
+        QColor rgb = c;
+        rgb.setAlpha(255);
+        applyEdit("Edit Material", [rgb](Material& M) { M.color = rgb; });
+    });
+    connect(eResetColor_, &QPushButton::clicked, this, [this] {
+        if (current_ < 0) return;
+        QImage img = doc_->model.materials[current_].image();
+        if (img.isNull()) return;
+        QColor avg = QColor::fromRgb(img.scaled(1, 1, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).pixel(0, 0));
+        avg.setAlpha(255);
+        applyEdit("Reset Material Color", [avg](Material& M) { M.color = avg; });
+    });
+    connect(eColorize_, &QCheckBox::toggled, this, [this](bool on) {
+        if (!updating_) applyEdit("Colorize Texture", [on](Material& M) { M.colorize = on; });
+    });
+    // opacity: the slider is one undo step from press to release; the spin box one per change
+    connect(eOpacity_, &QSlider::sliderPressed, this, [this] {
+        if (current_ < 0) return;
+        doc_->begin("Material Opacity");
+        dragging_ = true;
+    });
+    connect(eOpacity_, &QSlider::sliderReleased, this, [this] {
+        if (!dragging_) return;
+        dragging_ = false;
+        doc_->commit();
+    });
+    connect(eOpacity_, &QSlider::valueChanged, this, [this](int v) {
+        if (updating_) return;
+        { QSignalBlocker b(eOpacityN_); eOpacityN_->setValue(v); }
+        applyEdit("Material Opacity", [v](Material& M) { M.alpha = v / 100.0; });
+    });
+    connect(eOpacityN_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
+        if (updating_) return;
+        { QSignalBlocker b(eOpacity_); eOpacity_->setValue(v); }
+        applyEdit("Material Opacity", [v](Material& M) { M.alpha = v / 100.0; });
+    });
+    connect(eLoad_, &QPushButton::clicked, this, [this] {
+        QString fn = QFileDialog::getOpenFileName(this, "Texture image", QString(), "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)");
+        if (!fn.isEmpty() && !loadTexture(fn)) QMessageBox::warning(this, "Texture image", "Couldn't read that picture.");
+    });
+    connect(eClear_, &QPushButton::clicked, this, [this] {
+        applyEdit("Remove Texture", [](Material& M) { M.hasTexture = false; M.texturePng.clear(); M.colorize = false; });
+    });
+    connect(eExportTex_, &QPushButton::clicked, this, [this] {
+        if (current_ < 0) return;
+        QImage img = doc_->model.materials[current_].image();
+        if (img.isNull()) return;
+        QString fn = QFileDialog::getSaveFileName(this, "Save texture image", doc_->model.materials[current_].name + ".png",
+                                                  "Pictures (*.png *.jpg *.bmp)");
+        if (!fn.isEmpty() && !img.save(fn)) QMessageBox::warning(this, "Save texture image", "Couldn't save the picture.");
+    });
+    auto sizeEdited = [this](bool widthChanged) {
+        if (updating_ || current_ < 0) return;
+        const Material& M = doc_->model.materials[current_];
+        double v;
+        QLineEdit* ed = widthChanged ? eTexW_ : eTexH_;
+        if (!parseLength(ed->text(), doc_->model.units, v) || v <= 0) { refreshEditor(); return; }
+        double w = M.texW, h = M.texH;
+        if (widthChanged) {
+            if (eLock_->isChecked() && w > 0) h = h * v / w;
+            w = v;
+        } else {
+            if (eLock_->isChecked() && h > 0) w = w * v / h;
+            h = v;
+        }
+        if (std::abs(w - M.texW) < 1e-9 && std::abs(h - M.texH) < 1e-9) return;
+        applyEdit("Texture Size", [w, h](Material& M) { M.texW = w; M.texH = h; });
+    };
+    connect(eTexW_, &QLineEdit::editingFinished, this, [sizeEdited] { sizeEdited(true); });
+    connect(eTexH_, &QLineEdit::editingFinished, this, [sizeEdited] { sizeEdited(false); });
+}
+
+bool MaterialsPanel::editorShown() const { return editPage_->isVisibleTo(const_cast<MaterialsPanel*>(this)); }
+
+void MaterialsPanel::showEditor(bool edit) {
+    { QSignalBlocker a(selectTab_), b(editTab_); selectTab_->setChecked(!edit); editTab_->setChecked(edit); }
+    selectPage_->setVisible(!edit);
+    editPage_->setVisible(edit);
+    if (edit) refreshEditor();
+}
+
+void MaterialsPanel::refreshEditor() {
+    bool has = current_ >= 0 && current_ < (int)doc_->model.materials.size();
+    eNote_->setVisible(!has);
+    eForm_->setEnabled(has);
+    if (!has) return;
+    const Material& M = doc_->model.materials[current_];
+    updating_ = true;
+    if (!eName_->hasFocus()) eName_->setText(M.name);
+    eColor_->setColor(M.color);
+    eColorize_->setChecked(M.colorize);
+    eColorize_->setEnabled(M.hasTexture);
+    eResetColor_->setEnabled(M.hasTexture);
+    if (!dragging_) eOpacity_->setValue((int)std::lround(M.alpha * 100));
+    eOpacityN_->setValue((int)std::lround(M.alpha * 100));
+    QImage img = M.image();
+    if (!img.isNull()) {
+        eTexPreview_->setPixmap(QPixmap::fromImage(img.scaled(44, 44, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        eTexInfo_->setText(QString("%1 × %2 pixels").arg(img.width()).arg(img.height()));
+    } else {
+        eTexPreview_->clear();
+        eTexInfo_->setText("No texture");
+    }
+    eClear_->setEnabled(M.hasTexture);
+    eExportTex_->setEnabled(M.hasTexture);
+    for (auto* e : {eTexW_, eTexH_}) e->setEnabled(M.hasTexture);
+    eLock_->setEnabled(M.hasTexture);
+    if (!eTexW_->hasFocus()) eTexW_->setText(formatLength(M.texW, doc_->model.units));
+    if (!eTexH_->hasFocus()) eTexH_->setText(formatLength(M.texH, doc_->model.units));
+    updating_ = false;
+}
+
+void MaterialsPanel::applyEdit(const QString& what, const std::function<void(Material&)>& f) {
+    if (current_ < 0 || current_ >= (int)doc_->model.materials.size()) return;
+    bool own = !dragging_;
+    if (own) doc_->begin(what);
+    Material& M = doc_->model.materials[current_];
+    f(M);
+    M.rev = nextRevision();
+    // faces using it re-batch (transparency moves them between passes)
+    doc_->model.root.touch();
+    for (auto& def : doc_->model.defs) def.ents.touch();
+    if (own) doc_->commit();
+    else doc_->notifyChanged();
+    if (dragging_) {
+        // keep the swatches current without rebuilding the list mid-drag
+        currentSwatch_->setPixmap(swatch(M).pixmap(40, 40));
+        if (eOpacityN_->value() != (int)std::lround(M.alpha * 100)) {
+            QSignalBlocker b(eOpacityN_);
+            eOpacityN_->setValue((int)std::lround(M.alpha * 100));
+        }
+    }
+}
+
+bool MaterialsPanel::loadTexture(const QString& path) {
+    if (current_ < 0) return false;
+    QImage img(path);
+    if (img.isNull()) return false;
+    QByteArray png = pngBytes(img);
+    double ratio = (double)img.height() / std::max(1, img.width());
+    applyEdit("Load Texture", [png, ratio](Material& M) {
+        double w = M.hasTexture && M.texW > 0 ? M.texW : 1000;
+        M.texturePng = png;
+        M.hasTexture = true;
+        M.texW = w;
+        M.texH = w * ratio;
+    });
+    return true;
 }
 
 void MaterialsPanel::setCurrent(int m) {
@@ -852,6 +1292,7 @@ void MaterialsPanel::setCurrent(int m) {
     const Material& M = (m >= 0 && m < (int)doc_->model.materials.size()) ? doc_->model.materials[m] : def;
     currentSwatch_->setPixmap(swatch(M).pixmap(40, 40));
     currentLabel_->setText(M.name);
+    if (editPage_->isVisibleTo(this)) refreshEditor();
 }
 
 void MaterialsPanel::addFromLibrary(int li) {
@@ -865,15 +1306,27 @@ void MaterialsPanel::addFromLibrary(int li) {
         Material& M = doc_->model.materials[m];
         M.alpha = L.alpha;
         if (!L.texture.isEmpty()) {
-            QImage img = proceduralTexture(L.texture, 256);
-            QByteArray png;
-            QBuffer b(&png);
-            b.open(QIODevice::WriteOnly);
-            img.save(&b, "PNG");
             M.hasTexture = true;
-            M.texturePng = png;
+            M.texturePng = pngBytes(proceduralTexture(L.texture, 256));
             M.texW = M.texH = L.size;
         }
+        doc_->commit();
+    }
+    setCurrent(m);
+}
+
+void MaterialsPanel::addFromCollection(int i) {
+    if (i < 0 || i >= (int)collection_.size()) return;
+    const Material& C = collection_[i];
+    // the same material already in the model is reused; a different one by that name is added beside it
+    int m = doc_->model.findMaterial(C.name);
+    if (m < 0 || !sameMaterial(doc_->model.materials[m], C)) {
+        doc_->begin("Add Material");
+        Material M = C;
+        M.name = doc_->model.uniqueMaterialName(C.name);
+        M.rev = nextRevision();
+        doc_->model.materials.push_back(M);
+        m = (int)doc_->model.materials.size() - 1;
         doc_->commit();
     }
     setCurrent(m);
@@ -894,7 +1347,7 @@ void MaterialsPanel::refresh() {
             m->setData(Qt::UserRole, i);
             list_->addItem(m);
         }
-    } else {
+    } else if (src < 3) {
         const auto& lib = materialLibrary();
         for (int i = 0; i < (int)lib.size(); ++i) {
             bool tex = !lib[i].texture.isEmpty();
@@ -904,89 +1357,29 @@ void MaterialsPanel::refresh() {
             m.color = lib[i].color;
             m.alpha = lib[i].alpha;
             if (tex) {
-                QImage img = proceduralTexture(lib[i].texture, 64);
-                QByteArray png;
-                QBuffer b(&png);
-                b.open(QIODevice::WriteOnly);
-                img.save(&b, "PNG");
                 m.hasTexture = true;
-                m.texturePng = png;
+                m.texturePng = pngBytes(proceduralTexture(lib[i].texture, 64));
             }
             auto* it = new QListWidgetItem(swatch(m), m.name);
             it->setData(Qt::UserRole, i);
             list_->addItem(it);
         }
+    } else {
+        collection_.clear();
+        QString err;
+        if (src - 3 < collectionFiles_.size() && readCollection(collectionFiles_[src - 3], collection_, &err)) {
+            for (int i = 0; i < (int)collection_.size(); ++i) {
+                auto* it = new QListWidgetItem(swatch(collection_[i]), collection_[i].name);
+                it->setData(Qt::UserRole, i);
+                list_->addItem(it);
+            }
+        } else {
+            auto* it = new QListWidgetItem("This collection can't be read");
+            it->setData(Qt::UserRole, -1);
+            it->setFlags(Qt::NoItemFlags);
+            list_->addItem(it);
+        }
     }
-}
-
-void MaterialsPanel::editMaterial(int mi) {
-    if (mi < 0 || mi >= (int)doc_->model.materials.size()) return;
-    Material M = doc_->model.materials[mi];
-    QDialog dlg(this);
-    dlg.setWindowTitle("Edit Material");
-    auto* form = new QFormLayout(&dlg);
-    auto* name = new QLineEdit(M.name);
-    form->addRow("Name:", name);
-    auto* color = new ColorButton;
-    color->setColor(M.color);
-    form->addRow("Color:", color);
-    auto* opacity = new QSlider(Qt::Horizontal);
-    opacity->setRange(0, 100);
-    opacity->setValue((int)std::lround(M.alpha * 100));
-    form->addRow("Opacity:", opacity);
-    auto* texRow = new QWidget;
-    auto* tl = new QHBoxLayout(texRow);
-    tl->setContentsMargins(0, 0, 0, 0);
-    auto* texLabel = new QLabel(M.hasTexture ? "Texture loaded" : "No texture");
-    auto* load = new QPushButton("Load…");
-    auto* clear = new QPushButton("Clear");
-    tl->addWidget(texLabel, 1); tl->addWidget(load); tl->addWidget(clear);
-    form->addRow("Texture:", texRow);
-    auto* tw = new QLineEdit(formatLength(M.texW, doc_->model.units));
-    auto* th = new QLineEdit(formatLength(M.texH, doc_->model.units));
-    form->addRow("Texture width:", tw);
-    form->addRow("Texture height:", th);
-    auto* colorize = new QCheckBox("Colorize texture with color");
-    colorize->setChecked(M.colorize);
-    form->addRow("", colorize);
-    connect(load, &QPushButton::clicked, &dlg, [&] {
-        QString fn = QFileDialog::getOpenFileName(&dlg, "Texture image", QString(), "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)");
-        if (fn.isEmpty()) return;
-        QImage img(fn);
-        if (img.isNull()) return;
-        QByteArray png;
-        QBuffer b(&png);
-        b.open(QIODevice::WriteOnly);
-        img.save(&b, "PNG");
-        M.texturePng = png;
-        M.hasTexture = true;
-        double w;
-        if (!parseLength(tw->text(), doc_->model.units, w) || w <= 0) w = 1000;
-        th->setText(formatLength(w * img.height() / std::max(1, img.width()), doc_->model.units));
-        texLabel->setText(QFileInfo(fn).fileName());
-    });
-    connect(clear, &QPushButton::clicked, &dlg, [&] { M.hasTexture = false; M.texturePng.clear(); texLabel->setText("No texture"); });
-    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    form->addRow(bb);
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() != QDialog::Accepted) return;
-    M.name = name->text().isEmpty() ? M.name : name->text();
-    M.color = color->color();
-    M.color.setAlpha(255);
-    M.alpha = opacity->value() / 100.0;
-    double w, h;
-    if (parseLength(tw->text(), doc_->model.units, w) && w > 0) M.texW = w;
-    if (parseLength(th->text(), doc_->model.units, h) && h > 0) M.texH = h;
-    M.colorize = colorize->isChecked();
-    M.rev = nextRevision();
-    doc_->begin("Edit Material");
-    doc_->model.materials[mi] = M;
-    // material alpha changes batching: touch everything
-    doc_->model.root.touch();
-    for (auto& d : doc_->model.defs) d.ents.touch();
-    doc_->commit();
-    setCurrent(mi);
 }
 
 // ======================================================================= Components

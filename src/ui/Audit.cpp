@@ -871,6 +871,141 @@ private:
         }
     }
 
+    void sMaterials() {
+        begin("materials: edit in the panel, collections");
+        reset();
+        box(2000, 1500, 1000);
+        MaterialsPanel* mp = w->materials_;
+        if (w->trayDock_) w->trayDock_->show();
+        // a plain colour material, painted on the top face
+        d->begin("New Material");
+        int m = d->model.addMaterial("Panel Test", QColor(200, 40, 40));
+        d->commit();
+        mp->source_->setCurrentIndex(0);
+        mp->setCurrent(m);
+        int top = faceAt(Vec3(1000, 750, 1000));
+        check(top >= 0, "box has a top face");
+        if (top < 0) return;
+        tool("paint");
+        click(Vec3(1000, 750, 1000));
+        check(E().faces[top].matFront == m, "painted the top face");
+        tool("select");
+        key(Qt::Key_Escape);
+        settle(100);
+        QPointF c = scr(Vec3(1000, 750, 1000));
+        auto pixel = [&] { settle(80); return QColor(v->grabFramebuffer().pixel(c.toPoint())); };
+        QColor before = pixel();
+        // Select / Edit pages
+        mp->editTab_->click();
+        settle();
+        check(mp->editorShown() && !mp->selectPage_->isVisible(), "Edit tab shows the editor");
+        check(mp->eName_->text() == "Panel Test" && mp->eForm_->isEnabled(), "editor shows the current material");
+        // colour: one undo step, drawn at once
+        int undo0 = (int)d->canUndo();
+        QString u0 = d->undoName();
+        mp->eColor_->setColor(QColor(30, 160, 60));
+        emit mp->eColor_->colorChanged(QColor(30, 160, 60));
+        QColor after = pixel();
+        check(d->model.materials[m].color == QColor(30, 160, 60) && d->undoName() == "Edit Material", "colour edit applies as one step");
+        check(after.green() > after.red() && before.red() > before.green(),
+              QString("the face redraws in the new colour (%1 -> %2)").arg(before.name(), after.name()));
+        d->undo();
+        settle();
+        check(d->model.materials[m].color == QColor(200, 40, 40) && mp->eColor_->color() == QColor(200, 40, 40), "undo restores the colour in model and editor");
+        d->redo();
+        settle();
+        // rename (a clash gets a unique name)
+        d->begin("New Material");
+        int m2 = d->model.addMaterial("Other", QColor(10, 10, 10));
+        d->commit();
+        mp->setCurrent(m);
+        mp->eName_->setText("Other");
+        emit mp->eName_->editingFinished();
+        check(d->model.materials[m].name != "Other" && d->model.materials[m].name.startsWith("Other"), "renaming to a used name stays unique: " + d->model.materials[m].name);
+        mp->eName_->setText("Green Paint");
+        emit mp->eName_->editingFinished();
+        check(d->model.materials[m].name == "Green Paint" && mp->currentLabel_->text() == "Green Paint", "rename");
+        (void)m2;
+        // opacity: a slider drag is one undo step
+        QString lastUndo = d->undoName();
+        emit mp->eOpacity_->sliderPressed();
+        for (int k = 95; k >= 40; k -= 5) mp->eOpacity_->setValue(k);
+        emit mp->eOpacity_->sliderReleased();
+        check(std::abs(d->model.materials[m].alpha - 0.40) < 1e-9 && mp->eOpacityN_->value() == 40, "slider sets opacity and the number");
+        d->undo();
+        check(std::abs(d->model.materials[m].alpha - 1.0) < 1e-9 && d->undoName() == lastUndo, "the whole drag undoes in one step");
+        d->redo();
+        mp->eOpacityN_->setValue(75);
+        check(std::abs(d->model.materials[m].alpha - 0.75) < 1e-9 && mp->eOpacity_->value() == 75, "number box sets opacity");
+        // texture: load a picture, size follows its proportions, lock aspect
+        QString tmp = QDir::tempPath() + "/gable-audit-tex.png";
+        QImage img(80, 40, QImage::Format_RGB32);
+        for (int y = 0; y < 40; ++y)
+            for (int x = 0; x < 80; ++x) img.setPixel(x, y, ((x / 10) ^ (y / 10)) & 1 ? 0xff3050d0 : 0xffe0c080);
+        img.save(tmp);
+        check(mp->loadTexture(tmp), "load a texture picture");
+        Material& M = d->model.materials[m];
+        check(M.hasTexture && std::abs(M.texW - 1000) < 1e-6 && std::abs(M.texH - 500) < 1e-6, QString("texture size keeps the picture's proportions (%1 x %2)").arg(M.texW).arg(M.texH));
+        check(mp->eTexInfo_->text().startsWith("80 × 40"), "editor shows the picture size: " + mp->eTexInfo_->text());
+        mp->eTexW_->setText(formatLength(2000, d->model.units));
+        emit mp->eTexW_->editingFinished();
+        check(std::abs(d->model.materials[m].texW - 2000) < 1e-6 && std::abs(d->model.materials[m].texH - 1000) < 1e-6, "width with the lock scales the height");
+        mp->eLock_->setChecked(false);
+        mp->eTexH_->setText(formatLength(300, d->model.units));
+        emit mp->eTexH_->editingFinished();
+        check(std::abs(d->model.materials[m].texW - 2000) < 1e-6 && std::abs(d->model.materials[m].texH - 300) < 1e-6, "unlocked height changes alone");
+        mp->eLock_->setChecked(true);
+        mp->eResetColor_->click();
+        QColor avg = d->model.materials[m].color;
+        check(avg != QColor(30, 160, 60) && std::abs(avg.red() - (0x30 + 0xe0) / 2) < 12, "Reset sets the texture's average colour: " + avg.name());
+        mp->eColorize_->setChecked(true);
+        check(d->model.materials[m].colorize, "colorize");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { w->trayDock_->raise(); settle(200); w->grab().save(QDir::tempPath() + "/gable-materials-edit.png"); }
+        // collections: export, remove from the model, import, add back
+        QString coll = QDir::tempPath() + "/Audit Collection.gmat";
+        QFile::remove(coll);
+        QString err;
+        std::vector<int> all;
+        for (int i = 0; i < (int)d->model.materials.size(); ++i) all.push_back(i);
+        check(mp->exportCollection(coll, all, &err), "export the model's materials: " + err);
+        Material saved = d->model.materials[m];
+        std::vector<Material> back;
+        check(MaterialsPanel::readCollection(coll, back, &err) && back.size() == all.size(), "collection file reads back");
+        QString dst = MaterialsPanel::collectionsDir() + "/Audit Collection.gmat";
+        QFile::remove(dst);
+        check(mp->importCollection(coll, &err), "import the collection: " + err);
+        check(mp->source_->currentText() == "Audit Collection" && !mp->editorShown(), "imported collection is listed and shown");
+        int idx = -1;
+        for (int i = 0; i < mp->list_->count(); ++i)
+            if (mp->list_->item(i)->text() == saved.name) idx = i;
+        check(idx >= 0 && mp->list_->count() == (int)all.size(), "collection lists its materials");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { settle(200); w->grab().save(QDir::tempPath() + "/gable-materials-collection.png"); }
+        // a model without those materials
+        w->newFile();
+        settle();
+        mp = w->materials_;
+        mp->source_->setCurrentIndex(3 + (int)mp->collectionFiles_.indexOf(QFileInfo(dst).absoluteFilePath()));
+        for (int i = 0; i < mp->list_->count(); ++i)
+            if (mp->list_->item(i)->text() == saved.name) idx = i;
+        if (idx >= 0) emit mp->list_->itemClicked(mp->list_->item(idx));
+        int got = d->model.findMaterial(saved.name);
+        check(got >= 0 && got == mp->current(), "picking it adds the material to the new model");
+        if (got >= 0) {
+            const Material& G = d->model.materials[got];
+            check(G.color == saved.color && std::abs(G.alpha - saved.alpha) < 1e-9 && G.texturePng == saved.texturePng && std::abs(G.texW - saved.texW) < 1e-6 &&
+                      std::abs(G.texH - saved.texH) < 1e-6 && G.colorize == saved.colorize,
+                  "colour, opacity, texture, size and colorize come through");
+        }
+        emit mp->list_->itemClicked(mp->list_->item(idx));
+        check(d->model.materials.size() == 1, "picking it again reuses it");
+        int src = mp->source_->currentIndex();
+        check(mp->removeCollection(src) && !QFile::exists(dst) && mp->source_->count() == 3 + mp->collectionFiles_.size(), "remove the collection from the list");
+        QFile::remove(coll);
+        QFile::remove(tmp);
+        mp->showEditor(false);
+        validate("materials");
+    }
+
     void sTextures() {
         begin("texture: position, reset, rotate, flip, projected, follows moves");
         reset();
@@ -1298,7 +1433,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1327,6 +1462,7 @@ int Auditor::run() {
     sSlice();
     sOrbit();
     sTextures();
+    sMaterials();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
