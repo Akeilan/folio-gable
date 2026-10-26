@@ -64,6 +64,7 @@ public:
     void refresh();
 signals:
     void requestRedraw();
+    void inspectSolid();
 private:
     Document* doc_;
     QLabel* title_;

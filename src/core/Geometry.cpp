@@ -1896,6 +1896,210 @@ bool isSolid(const Entities& E) {
     return any;
 }
 
+static int liveFaces(const Entities& E, int e) {
+    int n = 0;
+    for (int f : E.edges[e].faces)
+        if (E.faces[f].alive) ++n;
+    return n;
+}
+
+// +1 if the face's loops walk a->b, -1 if b->a, 0 if the edge isn't on it
+static int walkDir(const Face& F, int a, int b) {
+    auto chk = [&](const std::vector<int>& L) {
+        for (size_t k = 0; k < L.size(); ++k) {
+            int x = L[k], y = L[(k + 1) % L.size()];
+            if (x == a && y == b) return 1;
+            if (x == b && y == a) return -1;
+        }
+        return 0;
+    };
+    int d = chk(F.outer);
+    for (auto& h : F.holes)
+        if (!d) d = chk(h);
+    return d;
+}
+
+// Faces that would turn round to make each shell consistent and outward (closed shells only for
+// the outward part). Shells are faces joined through edges with exactly two faces.
+static std::vector<int> facesToReverse(const Entities& E) {
+    std::vector<int> out;
+    std::vector<int> shell(E.faces.size(), -1);
+    std::vector<char> flip(E.faces.size(), 0);
+    int nsh = 0;
+    for (int s0 = 0; s0 < (int)E.faces.size(); ++s0) {
+        if (!E.faces[s0].alive || shell[s0] >= 0) continue;
+        std::vector<int> q{s0};
+        shell[s0] = nsh;
+        bool closed = true;
+        for (size_t i = 0; i < q.size(); ++i) {
+            int f = q[i];
+            for (int e : E.faceEdges(f)) {
+                const Edge& Ed = E.edges[e];
+                if (liveFaces(E, e) != 2) { closed = false; continue; }
+                int g = -1;
+                for (int x : Ed.faces) if (x != f && E.faces[x].alive) g = x;
+                if (g < 0 || shell[g] >= 0) continue;
+                shell[g] = nsh;
+                // neighbours walk their shared edge in opposite directions
+                int df = walkDir(E.faces[f], Ed.v[0], Ed.v[1]) * (flip[f] ? -1 : 1);
+                int dg = walkDir(E.faces[g], Ed.v[0], Ed.v[1]);
+                flip[g] = df != 0 && df == dg;
+                q.push_back(g);
+            }
+        }
+        if (closed) {
+            // outward: positive volume once the flips are made
+            double v = 0;
+            std::vector<Vec3> tris;
+            for (int f : q) {
+                tris.clear();
+                faceTriangles(E, f, tris);
+                double fv = 0;
+                for (size_t i = 0; i + 2 < tris.size(); i += 3) fv += tris[i].dot(tris[i + 1].cross(tris[i + 2]));
+                v += flip[f] ? -fv : fv;
+            }
+            if (v < 0)
+                for (int f : q) flip[f] = !flip[f];
+        } else {
+            // an open shell: keep the larger part as it is
+            size_t n = 0;
+            for (int f : q) n += flip[f];
+            if (n * 2 > q.size())
+                for (int f : q) flip[f] = !flip[f];
+        }
+        for (int f : q)
+            if (flip[f]) out.push_back(f);
+        ++nsh;
+    }
+    return out;
+}
+
+SolidReport inspectSolid(const Entities& E) {
+    SolidReport r;
+    std::vector<int> border;
+    std::set<int> inner;
+    for (int f = 0; f < (int)E.faces.size(); ++f) {
+        if (!E.faces[f].alive) continue;
+        bool allShared = true;
+        for (int e : E.faceEdges(f))
+            if (liveFaces(E, e) < 3) { allShared = false; break; }
+        if (allShared) { r.innerFaces.push_back(f); inner.insert(f); }
+    }
+    for (int e = 0; e < (int)E.edges.size(); ++e) {
+        const Edge& Ed = E.edges[e];
+        if (!Ed.alive) continue;
+        int n = liveFaces(E, e);
+        if (n == 0) r.strayEdges.push_back(e);
+        else if (n == 1) border.push_back(e);
+        else if (n >= 3) {
+            // still too many once the inner faces are gone?
+            int m = 0;
+            for (int f : Ed.faces) if (E.faces[f].alive && !inner.count(f)) ++m;
+            if (m >= 3) r.extraEdges.push_back(e);
+        }
+    }
+    // border edges into runs: walk from vertex to vertex along unused border edges
+    std::map<int, std::vector<int>> at;
+    for (int e : border) { at[E.edges[e].v[0]].push_back(e); at[E.edges[e].v[1]].push_back(e); }
+    std::set<int> used;
+    for (int e0 : border) {
+        if (used.count(e0)) continue;
+        std::vector<int> run{e0};
+        used.insert(e0);
+        for (int dir = 0; dir < 2; ++dir) {
+            int v = E.edges[e0].v[dir == 0 ? 1 : 0];
+            for (;;) {
+                int next = -1;
+                for (int e : at[v]) if (!used.count(e)) { next = e; break; }
+                if (next < 0) break;
+                used.insert(next);
+                if (dir == 0) run.push_back(next); else run.insert(run.begin(), next);
+                v = E.edges[next].other(v);
+            }
+        }
+        r.holes.push_back(run);
+    }
+    for (int i = 0; i < (int)E.insts.size(); ++i)
+        if (E.insts[i].alive) r.nested.push_back(i);
+    if (r.holes.empty() && r.innerFaces.empty() && r.extraEdges.empty()) r.reversedFaces = facesToReverse(E);
+    else {
+        // with holes the shell is open: report faces against their neighbours only
+        for (int f : facesToReverse(E)) r.reversedFaces.push_back(f);
+    }
+    return r;
+}
+
+// The vertices round a run of edges, in order; empty unless the run closes.
+static std::vector<int> loopVerts(const Entities& E, const std::vector<int>& run) {
+    if (run.size() < 3) return {};
+    std::vector<int> vs;
+    const Edge& a = E.edges[run[0]];
+    const Edge& b = E.edges[run[1]];
+    int v = (a.v[1] == b.v[0] || a.v[1] == b.v[1]) ? a.v[0] : a.v[1];
+    for (int e : run) {
+        const Edge& Ed = E.edges[e];
+        if (Ed.v[0] != v && Ed.v[1] != v) return {};
+        vs.push_back(v);
+        v = Ed.other(v);
+    }
+    if (v != vs[0]) return {};
+    return vs;
+}
+
+int repairSolid(Entities& E) {
+    int changes = 0;
+    SolidReport r = inspectSolid(E);
+    if (!r.strayEdges.empty()) {
+        for (int e : r.strayEdges) E.removeEdge(e);
+        changes += (int)r.strayEdges.size();
+    }
+    if (!r.innerFaces.empty()) {
+        std::set<int> touched;
+        for (int f : r.innerFaces)
+            for (int e : E.faceEdges(f)) touched.insert(e);
+        eraseFaces(E, r.innerFaces);
+        changes += (int)r.innerFaces.size();
+        // the faces either side of a removed wall are one face again
+        mergeCoplanarAcross(E, std::vector<int>(touched.begin(), touched.end()));
+        r = inspectSolid(E);
+    }
+    for (auto& run : r.holes) {
+        std::vector<int> loop = loopVerts(E, run);
+        if (loop.size() < 3) continue;
+        Vec3 n = newellNormal(E, loop);
+        if (n.isZero()) continue;
+        n = n.normalized();
+        Plane pl(n, E.verts[loop[0]].p);
+        double size = 0, off = 0;
+        for (int v : loop) {
+            size = std::max(size, (E.verts[v].p - E.verts[loop[0]].p).length());
+            off = std::max(off, std::fabs(pl.dist(E.verts[v].p)));
+        }
+        if (off <= std::max(kPlaneTol, size * 1e-6)) {
+            E.addFace(loop, {}, pl);
+        } else {
+            // not flat: a fan of triangles, the new edges soft and smooth
+            for (size_t i = 1; i + 1 < loop.size(); ++i) {
+                std::vector<int> tri{loop[0], loop[i], loop[i + 1]};
+                Vec3 tn = newellNormal(E, tri);
+                if (tn.isZero()) continue;
+                E.addFace(tri, {}, Plane(tn.normalized(), E.verts[loop[0]].p));
+            }
+            for (size_t i = 2; i + 1 < loop.size(); ++i) {
+                int e = E.findEdge(loop[0], loop[i]);
+                if (e >= 0) E.edges[e].soft = E.edges[e].smooth = true;
+            }
+        }
+        ++changes;
+    }
+    for (int f : facesToReverse(E)) {
+        reverseFace(E, f);
+        ++changes;
+    }
+    E.touch();
+    return changes;
+}
+
 double volume(const Entities& E) {
     double v = 0;
     std::vector<Vec3> tris;

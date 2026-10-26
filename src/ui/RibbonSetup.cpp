@@ -69,6 +69,7 @@ static const std::map<QString, QString>& descriptions() {
         {"exportobj", "Save the model as a Wavefront OBJ file with its materials."},
         {"exportgltf", "Save the model as glTF for Blender, game engines and the web."},
         {"export3mf", "Save the model as 3MF for 3D printing, with colours."},
+        {"solidinspector", "Show why the selected group isn't a solid (holes, stray edges, reversed faces) and fix it."},
         {"export2d", "Save the current view as a PNG or JPEG image at any size."},
         {"print", "Print the current view."},
         {"quit", "Close Folio Gable."},
@@ -632,6 +633,8 @@ void MainWindow::buildRibbon() {
         g->large(A("solid_subtract"), "Subtract", "solid_subtract");
         g->large(A("solid_trim"), "Trim", "solid_trim");
         g->large(A("solid_split"), "Split", "solid_split");
+        g = t->group("Check");
+        g->large(A("solidinspector"), "Solid Inspector", "solidinspector");
         g = t->group("Intersect Faces");
         g->column({A("intersectmodel"), A("intersectsel"), A("intersectctx")});
     }

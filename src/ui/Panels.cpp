@@ -3,6 +3,7 @@
 #include "core/Solids.h"
 #include "view/Viewport.h"
 #include "ui/Icons.h"
+#include "tools/Tools.h"
 #include "core/Serializer.h"
 #include <QDir>
 #include <QFile>
@@ -322,6 +323,21 @@ void EntityInfoPanel::refresh() {
                 tmp.xf = world;
                 double v = instanceVolume(D.model, tmp);
                 addRow("Volume:", ro(formatVolume(std::fabs(v), U)));
+            } else if (in.def >= 0 && D.model.defs[in.def].ents.aliveCount(EntKind::Face) > 0) {
+                // why it isn't a solid, and the way to fix it
+                geom::SolidReport r = geom::inspectSolid(D.model.defs[in.def].ents);
+                auto* row = new QWidget;
+                auto* hl = new QHBoxLayout(row);
+                hl->setContentsMargins(0, 0, 0, 0);
+                auto* why = new QLabel("Not a solid: " + SolidInspectorTool::describe(r));
+                why->setWordWrap(true);
+                why->setObjectName("solidWhy");
+                auto* go = new QPushButton("Inspect");
+                go->setToolTip("Show the problems in the model and fix them");
+                connect(go, &QPushButton::clicked, this, [this] { emit inspectSolid(); });
+                hl->addWidget(why, 1);
+                hl->addWidget(go);
+                addRow("Solid:", row);
             }
             BBox b = D.model.defBBox(in.def);
             if (b.valid()) {

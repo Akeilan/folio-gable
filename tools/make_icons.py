@@ -737,6 +737,13 @@ def _(ic):
     ic.poly([(16, 6), (5, 12), (5, 26), (16, 29)], fill=TINT)
 
 
+@icon("solidinspector")
+def _(ic):
+    box(ic, 3, 12, 15, 13, 7)
+    ic.line(10.5, 12.5, 18, 5, stroke=RED, width=2)
+    magnifier(ic, 22, 18, r=6)
+
+
 @icon("matchphoto")
 def _(ic):
     ic.rect(3.5, 5.5, 25, 21, fill="#e4edf6")

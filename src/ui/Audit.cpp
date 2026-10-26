@@ -7,6 +7,7 @@
 #include "core/Geometry.h"
 #include "core/Serializer.h"
 #include "core/Model.h"
+#include "core/Solids.h"
 #include "ui/Backstage.h"
 #include "ui/MainWindow.h"
 #include "ui/Panels.h"
@@ -1268,6 +1269,75 @@ private:
         reset();
     }
 
+    void sSolidInspector() {
+        begin("solid inspector");
+        reset();
+        box(2000, 1500, 1000);
+        act("selectall");
+        act("makegroup");
+        check(insts() == 1, "a group of a box");
+        int def = E().insts[0].def;
+        Entities& G = d->model.defs[def].ents;
+        // break it: lose the top, add a stray edge, turn a side face round
+        d->begin("Break");
+        for (int f = 0; f < (int)G.faces.size(); ++f)
+            if (G.faces[f].alive && G.faces[f].plane.n.z > 0.99) G.removeFace(f);
+        geom::insertSegment(G, Vec3(0, 0, 0), Vec3(-600, -600, 0));
+        for (int f = 0; f < (int)G.faces.size(); ++f)
+            if (G.faces[f].alive && std::abs(G.faces[f].plane.n.x) > 0.99) { geom::reverseFace(G, f); break; }
+        G.touch();
+        d->commit();
+        // no selection: the inspector asks for one
+        d->clearSelection();
+        tool("solidinspect");
+        auto* si = static_cast<SolidInspectorTool*>(v->toolById("solidinspect"));
+        check(!si->isActive() && si->status().startsWith("Select one group"), "with nothing selected it asks for a group");
+        tool("select");
+        d->setSelection({{EntKind::Instance, 0}});
+        settle(50);
+        auto* info = w->findChild<EntityInfoPanel*>();
+        if (info) info->refresh();
+        settle(20);
+        QLabel* why = nullptr;
+        for (auto* l : info ? info->findChildren<QLabel*>("solidWhy") : QList<QLabel*>()) if (l->isVisible()) why = l;
+        check(why && why->text().contains("1 hole") && why->text().contains("1 stray edge"), "Entity Info says why it isn't a solid: " + (why ? why->text() : QString("(none)")));
+        QPushButton* go = nullptr;
+        for (auto* b : info ? info->findChildren<QPushButton*>() : QList<QPushButton*>()) if (b->isVisible() && b->text() == "Inspect") go = b;
+        check(go != nullptr, "with an Inspect button");
+        if (go) go->click();
+        settle();
+        check(v->tool() == si && si->isActive(), "Inspect opens the Solid Inspector");
+        const geom::SolidReport& r = si->report();
+        check(r.holes.size() == 1 && r.holeEdges() == 4 && r.strayEdges.size() == 1, QString("finds the hole and the stray edge (%1 holes, %2 stray)").arg(r.holes.size()).arg(r.strayEdges.size()));
+        check(si->status().contains("not a solid") && si->status().contains("1 hole"), "and says so: " + si->status());
+        Overlay ov;
+        si->draw(ov);
+        int redLines = 0;
+        for (auto& l : ov.lines) if (l.c == QColor(225, 30, 30)) ++redLines;
+        check(redLines == 4 && !ov.labels.empty(), QString("the hole's edges are marked in the view (%1)").arg(redLines));
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { settle(100); v->grabFramebuffer().save(QDir::tempPath() + "/gable-solid-inspector.png"); }
+        key(Qt::Key_Return);
+        check(si->report().clean() && instanceIsSolid(d->model, E().insts[0]), "Enter fixes it: the group is a solid");
+        double vol = std::abs(instanceVolume(d->model, E().insts[0]));
+        check(std::abs(vol - 2000.0 * 1500 * 1000) < 10, QString("with the box's volume (%1)").arg(vol, 0, 'f', 0));
+        check(d->undoName() == "Fix Solid", "the fix is one undo step");
+        d->undo();
+        settle();
+        check(!instanceIsSolid(d->model, E().insts[0]), "undo brings the problems back");
+        d->redo();
+        // inside the open group with nothing selected it inspects the group being edited
+        key(Qt::Key_Escape);
+        d->openInstance(0);
+        d->clearSelection();
+        settle();
+        tool("solidinspect");
+        check(si->isActive() && si->report().clean() && si->status().contains("is a solid"), "inside a group it inspects that group: " + si->status());
+        key(Qt::Key_Escape);
+        d->closeAllContexts();
+        validate("solid inspector");
+        reset();
+    }
+
     void sTextures() {
         begin("texture: position, reset, rotate, flip, projected, follows moves");
         reset();
@@ -1695,7 +1765,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -1727,6 +1797,7 @@ int Auditor::run() {
     sMaterials();
     sEdgeStyles();
     sMatchPhoto();
+    sSolidInspector();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();
