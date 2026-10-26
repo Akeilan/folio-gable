@@ -50,6 +50,7 @@ public:
     void pushViewHistory();
 
     QImage renderImage(int w, int h, bool transparent);
+    void invalidateMeshes() { renderer_.invalidateMeshes(); }
     Vec3 orbitPivot(double x, double y);   // what is under the cursor, else emptyPivot()
     Vec3 emptyPivot();                      // pivot when the cursor is over empty space
     void beginOrbit(const Vec3& pivot);
@@ -97,6 +98,7 @@ private:
     double middlePressX_ = 0, middlePressY_ = 0;
     // animation
     QTimer animTimer_;
+    QTimer indexTimer_;
     CameraState animFrom_, animTo_;
     QElapsedTimer animClock_;
     int animMs_ = 600;

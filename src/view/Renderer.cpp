@@ -1,4 +1,5 @@
 #include "view/Renderer.h"
+#include <QElapsedTimer>
 #include "core/Geometry.h"
 #include "core/Tessellate.h"
 #include "ui/Document.h"
@@ -160,6 +161,7 @@ layout(triangle_strip, max_vertices = 4) out;
 in VS { vec4 col; vec3 n1; vec3 n2; float flags; vec3 w; float clip; } gi[];
 uniform vec2 uViewport;
 uniform float uWidth;
+uniform float uProfileWidth;
 uniform int uMode;
 uniform vec3 uEye;
 uniform bool uOrtho;
@@ -177,7 +179,8 @@ void main() {
     bool soft = (f & 4) != 0;
     if (uMode == 0 && soft) return;
     if (uMode == 2 && !soft) return;
-    if (uMode == 1) {
+    float width = uWidth;
+    if (uMode == 1 || uMode == 3) {
         if (soft) return;
         bool prof = (f & 1) != 0;
         if ((f & 2) != 0) {
@@ -186,7 +189,9 @@ void main() {
             float a = dot(gi[0].n1, V), b = dot(gi[0].n2, V);
             prof = (a > 0.0) != (b > 0.0);
         }
-        if (!prof) return;
+        if (uMode == 1 && !prof) return;
+        // mode 3: every hard edge in one pass, profiles drawn wider
+        if (uMode == 3 && prof) width = uProfileWidth;
     }
     vec4 p0 = gl_in[0].gl_Position, p1 = gl_in[1].gl_Position;
     float c0 = gi[0].clip, c1 = gi[1].clip;
@@ -199,7 +204,7 @@ void main() {
     vec2 d = s1 - s0;
     float len = length(d);
     if (len < 1e-6) { d = vec2(1.0, 0.0); } else { d /= len; }
-    vec2 nrm = vec2(-d.y, d.x) * (uWidth * 0.5);
+    vec2 nrm = vec2(-d.y, d.x) * (width * 0.5);
     vec2 ext = d * uExt;
     vec4 col;
     if (uColorMode == 1) col = gi[0].col;
@@ -380,6 +385,8 @@ void Renderer::cleanup() {
     }
     meshes_.clear();
     textures_.clear();
+    if (selCache_.vao) { glDeleteVertexArrays(1, &selCache_.vao); glDeleteBuffers(1, &selCache_.vbo); }
+    selCache_ = SelCache();
     glDeleteVertexArrays(1, &dynVao_); glDeleteBuffers(1, &dynVbo_);
     glDeleteVertexArrays(1, &triVao_); glDeleteBuffers(1, &triVbo_);
     glDeleteVertexArrays(1, &bgVao_);
@@ -398,6 +405,173 @@ uint64_t Renderer::styleSig() const {
     return h;
 }
 
+// ------------------------------------------------------------------ mesh building
+
+namespace {
+inline void mixH(uint64_t& h, uint64_t v) { h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2); }
+inline void mixD(uint64_t& h, double d) { uint64_t u; memcpy(&u, &d, 8); mixH(h, u); }
+inline void mixV(uint64_t& h, const Vec3& v) { mixD(h, v.x); mixD(h, v.y); mixD(h, v.z); }
+}  // namespace
+
+// Everything a face's triangles depend on except the normals of its smooth neighbours.
+static uint64_t faceSignature(const Entities& E, int f) {
+    const Face& F = E.faces[f];
+    uint64_t h = 1469598103934665603ULL;
+    mixH(h, F.alive | (F.hidden << 1) | ((uint64_t)(uint32_t)F.tag << 8));
+    mixH(h, (uint64_t)(uint32_t)F.matFront << 32 | (uint32_t)F.matBack);
+    mixV(h, F.plane.n);
+    mixD(h, F.plane.d);
+    for (const TexMap* t : {&F.texFront, &F.texBack})
+        if (t->custom) { mixV(h, t->uAxis); mixV(h, t->vAxis); mixD(h, t->uOff); mixD(h, t->vOff); }
+    for (int v : F.outer) { mixH(h, (uint64_t)v); mixV(h, E.verts[v].p); }
+    for (auto& L : F.holes) {
+        mixH(h, 0xfeedULL);
+        for (int v : L) { mixH(h, (uint64_t)v); mixV(h, E.verts[v].p); }
+    }
+    return h;
+}
+
+static uint64_t edgeSignature(const Entities& E, int e) {
+    const Edge& Ed = E.edges[e];
+    uint64_t h = 1469598103934665603ULL;
+    mixH(h, Ed.alive | (Ed.soft << 1) | (Ed.smooth << 2) | (Ed.hidden << 3) | ((uint64_t)(uint32_t)Ed.tag << 8));
+    mixV(h, E.verts[Ed.v[0]].p);
+    mixV(h, E.verts[Ed.v[1]].p);
+    for (int f : Ed.faces) { mixH(h, (uint64_t)f | ((uint64_t)E.faces[f].alive << 40)); mixV(h, E.faces[f].plane.n); }
+    return h;
+}
+
+// Builds the triangles of single faces: tessellation, smooth normals across smooth edges, UVs.
+struct Renderer::FaceGen {
+    const Entities& E;
+    std::vector<char> vSmooth;
+    std::vector<int> fanOff, fanLen, fanFaces;
+    std::vector<uint64_t> fanAdj;
+    std::vector<std::pair<int, Vec3>> vn;
+    std::vector<std::vector<Vec2>> loops;
+    std::vector<int> ids;
+    TessResult tr;
+
+    explicit FaceGen(const Entities& e) : E(e), vSmooth(e.verts.size(), 0), fanOff(e.verts.size(), -1), fanLen(e.verts.size(), 0) {
+        for (const Edge& Ed : E.edges)
+            if (Ed.alive && Ed.smooth) vSmooth[Ed.v[0]] = vSmooth[Ed.v[1]] = 1;
+    }
+
+    void buildFan(int v) {
+        fanOff[v] = (int)fanFaces.size();
+        for (int e : E.verts[v].edges)
+            for (int h : E.edges[e].faces)
+                if (E.faces[h].alive && std::find(fanFaces.begin() + fanOff[v], fanFaces.end(), h) == fanFaces.end() &&
+                    (int)fanFaces.size() - fanOff[v] < 64) fanFaces.push_back(h);
+        int cnt = (int)fanFaces.size() - fanOff[v];
+        fanLen[v] = cnt;
+        fanAdj.resize(fanFaces.size(), 0);
+        auto slot = [&](int h) {
+            for (int k = 0; k < cnt; ++k) if (fanFaces[fanOff[v] + k] == h) return k;
+            return -1;
+        };
+        for (int e : E.verts[v].edges) {
+            const Edge& Ed = E.edges[e];
+            if (!Ed.alive || !Ed.smooth) continue;
+            for (int a : Ed.faces)
+                for (int b : Ed.faces) {
+                    int sa = slot(a), sb = slot(b);
+                    if (sa >= 0 && sb >= 0 && sa != sb) fanAdj[fanOff[v] + sa] |= 1ULL << sb;
+                }
+        }
+    }
+
+    // smooth normal at v for face f: faces joined across smooth edges at v, roughly facing the same way
+    Vec3 vertexNormal(int f, int v) {
+        for (auto& [k, n] : vn) if (k == v) return n;
+        const Face& F = E.faces[f];
+        Vec3 n = F.plane.n;
+        if (vSmooth[v]) {
+            if (fanOff[v] < 0) buildFan(v);
+            const int off = fanOff[v], cnt = fanLen[v];
+            int start = -1;
+            for (int k = 0; k < cnt; ++k) if (fanFaces[off + k] == f) { start = k; break; }
+            Vec3 sum = F.plane.n;
+            if (start >= 0) {
+                uint64_t seenMask = 1ULL << start, todo = fanAdj[off + start];
+                while (todo & ~seenMask) {
+                    int k = __builtin_ctzll(todo & ~seenMask);
+                    seenMask |= 1ULL << k;
+                    const Vec3& hn = E.faces[fanFaces[off + k]].plane.n;
+                    if (hn.dot(F.plane.n) < 0.2) continue;
+                    sum += hn;
+                    todo |= fanAdj[off + k];
+                }
+            }
+            n = sum.normalized();
+            if (n.isZero()) n = F.plane.n;
+        }
+        vn.emplace_back(v, n);
+        return n;
+    }
+
+    // Appends the face's vertices (10 floats each); false if it cannot be tessellated.
+    bool emitFace(int f, std::vector<float>& vb) {
+        const Face& F = E.faces[f];
+        Frame2 fr(F.plane);
+        Plane back = F.plane;
+        back.n = -back.n; back.d = -back.d;
+        Frame2 frb(back);
+        loops.resize(1 + F.holes.size());
+        ids.clear();
+        auto addL = [&](const std::vector<int>& L, std::vector<Vec2>& q) {
+            q.clear();
+            for (int v : L) { q.push_back(fr.to2(E.verts[v].p)); ids.push_back(v); }
+        };
+        addL(F.outer, loops[0]);
+        for (size_t h = 0; h < F.holes.size(); ++h) addL(F.holes[h], loops[h + 1]);
+        if (!tessellate(loops, tr)) return false;
+        vn.clear();
+        for (int idx : tr.tris) {
+            Vec3 p, n;
+            if (idx < (int)ids.size()) { p = E.verts[ids[idx]].p; n = vertexNormal(f, ids[idx]); }
+            else { p = fr.to3(tr.pts[idx]); n = F.plane.n; }
+            double uf, vf, ub, vbk;
+            if (F.texFront.custom) { uf = p.dot(F.texFront.uAxis) + F.texFront.uOff; vf = p.dot(F.texFront.vAxis) + F.texFront.vOff; }
+            else { uf = p.dot(fr.u); vf = p.dot(fr.v); }
+            if (F.texBack.custom) { ub = p.dot(F.texBack.uAxis) + F.texBack.uOff; vbk = p.dot(F.texBack.vAxis) + F.texBack.vOff; }
+            else { ub = p.dot(frb.u); vbk = p.dot(frb.v); }
+            float data[10] = {(float)p.x, (float)p.y, (float)p.z, (float)n.x, (float)n.y, (float)n.z,
+                              (float)uf, (float)vf, (float)ub, (float)vbk};
+            vb.insert(vb.end(), data, data + 10);
+        }
+        return true;
+    }
+};
+
+void Renderer::edgeVerts(const Entities& E, int e, LV& a, LV& b) const {
+    const Style& st = D->model.style;
+    const Edge& Ed = E.edges[e];
+    a = LV{}; b = LV{};
+    Vec3 p0 = E.verts[Ed.v[0]].p, p1 = E.verts[Ed.v[1]].p;
+    a.p[0] = (float)p0.x; a.p[1] = (float)p0.y; a.p[2] = (float)p0.z;
+    b.p[0] = (float)p1.x; b.p[1] = (float)p1.y; b.p[2] = (float)p1.z;
+    QColor c = st.colorByTag && Ed.tag < (int)D->model.tags.size() ? D->model.tags[Ed.tag].color : st.edgeColor;
+    float cc[4] = {(float)c.redF(), (float)c.greenF(), (float)c.blueF(), 1.f};
+    memcpy(a.c, cc, 16); memcpy(b.c, cc, 16);
+    int nf = 0;
+    Vec3 n1, n2;
+    for (int f : Ed.faces) {
+        if (!E.faces[f].alive) continue;
+        if (nf == 0) n1 = E.faces[f].plane.n; else if (nf == 1) n2 = E.faces[f].plane.n;
+        ++nf;
+    }
+    int flags = 0;
+    if (nf == 1) flags |= 1;
+    if (nf == 2) flags |= 2;
+    if (Ed.soft || (Ed.hidden && st.showHidden)) flags |= 4;
+    if (Ed.smooth) flags |= 8;
+    float fn1[3] = {(float)n1.x, (float)n1.y, (float)n1.z}, fn2[3] = {(float)n2.x, (float)n2.y, (float)n2.z};
+    memcpy(a.n1, fn1, 12); memcpy(b.n1, fn1, 12);
+    memcpy(a.n2, fn2, 12); memcpy(b.n2, fn2, 12);
+    a.f = b.f = (float)flags;
+}
+
 void Renderer::buildMesh(Mesh& M, const Entities& E, uint64_t sig) {
     const Style& st = D->model.style;
     auto tagVis = [&](int t) { return D->tagVisible(t); };
@@ -409,9 +583,10 @@ void Renderer::buildMesh(Mesh& M, const Entities& E, uint64_t sig) {
         groups[{F.matFront, F.matBack}].push_back(f);
     }
     std::vector<float> vb;
+    vb.reserve(E.faces.size() * 60);
     M.batches.clear();
-    M.faceRange.clear();
-    std::vector<Vec2> l2;
+    M.faceRange.assign(E.faces.size(), {0, 0});
+    FaceGen gen(E);
     for (auto& [key, fl] : groups) {
         Batch b;
         b.start = (int)(vb.size() / 10);
@@ -420,71 +595,8 @@ void Renderer::buildMesh(Mesh& M, const Entities& E, uint64_t sig) {
         auto alpha = [&](int m) { return m >= 0 && m < (int)D->model.materials.size() ? D->model.materials[m].alpha : 1.0; };
         b.transparent = alpha(b.matF) < 0.999 || alpha(b.matB) < 0.999;
         for (int f : fl) {
-            const Face& F = E.faces[f];
             int first = (int)(vb.size() / 10);
-            Frame2 fr(F.plane);
-            Plane back = F.plane;
-            back.n = -back.n; back.d = -back.d;
-            Frame2 frb(back);
-            std::vector<std::vector<Vec2>> loops;
-            std::vector<int> ids;
-            auto addL = [&](const std::vector<int>& L) {
-                std::vector<Vec2> q;
-                for (int v : L) { q.push_back(fr.to2(E.verts[v].p)); ids.push_back(v); }
-                loops.push_back(q);
-            };
-            addL(F.outer);
-            for (auto& h : F.holes) addL(h);
-            TessResult tr;
-            if (!tessellate(loops, tr)) continue;
-            // smooth normals per vertex
-            std::unordered_map<int, Vec3> vn;
-            auto vertexNormal = [&](int v) -> Vec3 {
-                auto it = vn.find(v);
-                if (it != vn.end()) return it->second;
-                bool anySmooth = false;
-                for (int e : E.verts[v].edges)
-                    if (E.edges[e].alive && E.edges[e].smooth) { anySmooth = true; break; }
-                Vec3 n = F.plane.n;
-                if (anySmooth) {
-                    std::unordered_set<int> seen = {f};
-                    std::vector<int> q = {f};
-                    Vec3 sum;
-                    for (size_t qi = 0; qi < q.size(); ++qi) {
-                        int g = q[qi];
-                        sum += E.faces[g].plane.n;
-                        for (int e : E.verts[v].edges) {
-                            const Edge& Ed = E.edges[e];
-                            if (!Ed.alive || !Ed.smooth) continue;
-                            if (std::find(Ed.faces.begin(), Ed.faces.end(), g) == Ed.faces.end()) continue;
-                            for (int h : Ed.faces) {
-                                if (seen.count(h) || !E.faces[h].alive) continue;
-                                // only blend faces whose normals point roughly the same way
-                                if (E.faces[h].plane.n.dot(F.plane.n) < 0.2) continue;
-                                seen.insert(h);
-                                q.push_back(h);
-                            }
-                        }
-                    }
-                    n = sum.normalized();
-                    if (n.isZero()) n = F.plane.n;
-                }
-                vn[v] = n;
-                return n;
-            };
-            for (int idx : tr.tris) {
-                Vec3 p, n;
-                if (idx < (int)ids.size()) { p = E.verts[ids[idx]].p; n = vertexNormal(ids[idx]); }
-                else { p = fr.to3(tr.pts[idx]); n = F.plane.n; }
-                double uf, vf, ub, vbk;
-                if (F.texFront.custom) { uf = p.dot(F.texFront.uAxis) + F.texFront.uOff; vf = p.dot(F.texFront.vAxis) + F.texFront.vOff; }
-                else { uf = p.dot(fr.u); vf = p.dot(fr.v); }
-                if (F.texBack.custom) { ub = p.dot(F.texBack.uAxis) + F.texBack.uOff; vbk = p.dot(F.texBack.vAxis) + F.texBack.vOff; }
-                else { ub = p.dot(frb.u); vbk = p.dot(frb.v); }
-                float data[10] = {(float)p.x, (float)p.y, (float)p.z, (float)n.x, (float)n.y, (float)n.z,
-                                  (float)uf, (float)vf, (float)ub, (float)vbk};
-                vb.insert(vb.end(), data, data + 10);
-            }
+            if (!gen.emitFace(f, vb)) continue;
             M.faceRange[f] = {first, (int)(vb.size() / 10) - first};
         }
         b.count = (int)(vb.size() / 10) - b.start;
@@ -500,33 +612,13 @@ void Renderer::buildMesh(Mesh& M, const Entities& E, uint64_t sig) {
 
     // ---- edges
     std::vector<LV> eb;
-    M.edgeFirst.clear();
+    eb.reserve(E.edges.size() * 2);
+    M.edgeFirst.assign(E.edges.size(), -1);
     for (int e = 0; e < (int)E.edges.size(); ++e) {
         const Edge& Ed = E.edges[e];
         if (!Ed.alive || (Ed.hidden && !st.showHidden) || !tagVis(Ed.tag)) continue;
-        LV a{}, b{};
-        Vec3 p0 = E.verts[Ed.v[0]].p, p1 = E.verts[Ed.v[1]].p;
-        a.p[0] = (float)p0.x; a.p[1] = (float)p0.y; a.p[2] = (float)p0.z;
-        b.p[0] = (float)p1.x; b.p[1] = (float)p1.y; b.p[2] = (float)p1.z;
-        QColor c = st.colorByTag && Ed.tag < (int)D->model.tags.size() ? D->model.tags[Ed.tag].color : st.edgeColor;
-        float cc[4] = {(float)c.redF(), (float)c.greenF(), (float)c.blueF(), 1.f};
-        memcpy(a.c, cc, 16); memcpy(b.c, cc, 16);
-        int nf = 0;
-        Vec3 n1, n2;
-        for (int f : Ed.faces) {
-            if (!E.faces[f].alive) continue;
-            if (nf == 0) n1 = E.faces[f].plane.n; else if (nf == 1) n2 = E.faces[f].plane.n;
-            ++nf;
-        }
-        int flags = 0;
-        if (nf == 1) flags |= 1;
-        if (nf == 2) flags |= 2;
-        if (Ed.soft || (Ed.hidden && st.showHidden)) flags |= 4;
-        if (Ed.smooth) flags |= 8;
-        float fn1[3] = {(float)n1.x, (float)n1.y, (float)n1.z}, fn2[3] = {(float)n2.x, (float)n2.y, (float)n2.z};
-        memcpy(a.n1, fn1, 12); memcpy(b.n1, fn1, 12);
-        memcpy(a.n2, fn2, 12); memcpy(b.n2, fn2, 12);
-        a.f = b.f = (float)flags;
+        LV a, b;
+        edgeVerts(E, e, a, b);
         M.edgeFirst[e] = (int)eb.size();
         eb.push_back(a);
         eb.push_back(b);
@@ -543,15 +635,135 @@ void Renderer::buildMesh(Mesh& M, const Entities& E, uint64_t sig) {
     glEnableVertexAttribArray(3); glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, n2));
     glEnableVertexAttribArray(4); glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, f));
     glBindVertexArray(0);
+    // signatures for later in-place updates
+    M.faceSig.resize(E.faces.size());
+    for (int f = 0; f < (int)E.faces.size(); ++f) M.faceSig[f] = faceSignature(E, f);
+    M.edgeSig.resize(E.edges.size());
+    for (int e = 0; e < (int)E.edges.size(); ++e) M.edgeSig[e] = edgeSignature(E, e);
     M.rev = E.rev;
     M.sig = sig;
+}
+
+// When only vertex positions moved (a Move/Rotate/Scale preview, or a small edit that kept the
+// entity counts), rewrite just the faces and edges that changed in place. Returns false when a
+// full rebuild is needed.
+bool Renderer::updateMesh(Mesh& M, const Entities& E) {
+    if (M.faceSig.size() != E.faces.size() || M.edgeSig.size() != E.edges.size() || M.faceRange.size() != E.faces.size())
+        return false;
+    const int nf = (int)E.faces.size(), ne = (int)E.edges.size();
+    std::vector<int> dirtyF, dirtyE;
+    if (E.movedRev == E.rev && E.movedBaseRev == M.rev) {
+        // only the hinted vertices moved since this mesh was built: look at what touches them
+        std::vector<char> mf(nf, 0), me(ne, 0);
+        for (int v : E.movedVerts) {
+            if (v < 0 || v >= (int)E.verts.size()) return false;
+            for (int e : E.verts[v].edges) {
+                if (!me[e]) { me[e] = 1; dirtyE.push_back(e); }
+                for (int g : E.edges[e].faces)
+                    if (!mf[g]) { mf[g] = 1; dirtyF.push_back(g); }
+            }
+        }
+        // the edges of those faces carry the faces' normals (profiles)
+        size_t nFaces = dirtyF.size();
+        for (size_t i = 0; i < nFaces; ++i) {
+            const Face& F = E.faces[dirtyF[i]];
+            auto loopEdges = [&](const std::vector<int>& L) {
+                for (size_t k = 0; k < L.size(); ++k) {
+                    int e = E.findEdge(L[k], L[(k + 1) % L.size()]);
+                    if (e >= 0 && !me[e]) { me[e] = 1; dirtyE.push_back(e); }
+                }
+            };
+            loopEdges(F.outer);
+            for (auto& h : F.holes) loopEdges(h);
+        }
+        if ((int)dirtyF.size() > std::max(64, nf / 8) || (int)dirtyE.size() > std::max(64, ne / 8)) return false;
+        for (int f : dirtyF) M.faceSig[f] = faceSignature(E, f);
+        for (int e : dirtyE) M.edgeSig[e] = edgeSignature(E, e);
+    } else {
+        std::vector<uint64_t> fs(nf), es(ne);
+        for (int f = 0; f < nf; ++f) {
+            fs[f] = faceSignature(E, f);
+            if (fs[f] != M.faceSig[f]) {
+                dirtyF.push_back(f);
+                if ((int)dirtyF.size() > std::max(64, nf / 8)) return false;
+            }
+        }
+        for (int e = 0; e < ne; ++e) {
+            es[e] = edgeSignature(E, e);
+            if (es[e] != M.edgeSig[e]) {
+                dirtyE.push_back(e);
+                if ((int)dirtyE.size() > std::max(64, ne / 8)) return false;
+            }
+        }
+        M.faceSig.swap(fs);
+        M.edgeSig.swap(es);
+    }
+    if (dirtyF.empty() && dirtyE.empty()) {
+        M.rev = E.rev;
+        return true;
+    }
+    FaceGen gen(E);
+    // a moved face changes the smooth normals of the faces around its smooth vertices
+    {
+        std::vector<char> mark(nf, 0);
+        for (int f : dirtyF) mark[f] = 1;
+        size_t n0 = dirtyF.size();
+        for (size_t i = 0; i < n0; ++i) {
+            const Face& F = E.faces[dirtyF[i]];
+            auto ring = [&](const std::vector<int>& L) {
+                for (int v : L) {
+                    if (!gen.vSmooth[v]) continue;
+                    for (int e : E.verts[v].edges)
+                        for (int g : E.edges[e].faces)
+                            if (!mark[g]) { mark[g] = 1; dirtyF.push_back(g); }
+                }
+            };
+            ring(F.outer);
+            for (auto& h : F.holes) ring(h);
+        }
+    }
+    const Style& st = D->model.style;
+    std::vector<float> vb;
+    glBindBuffer(GL_ARRAY_BUFFER, M.vboF);
+    for (int f : dirtyF) {
+        const Face& F = E.faces[f];
+        bool visible = F.alive && (!F.hidden || st.showHidden) && D->tagVisible(F.tag);
+        auto [first, count] = M.faceRange[f];
+        if (!visible) { if (count > 0) return false; continue; }
+        if (count == 0) return false;   // newly visible: belongs in a batch
+        // the face must still belong to the batch (materials) it was built in
+        for (auto& b : M.batches)
+            if (first >= b.start && first < b.start + b.count && (b.matF != F.matFront || b.matB != F.matBack)) return false;
+        vb.clear();
+        if (!gen.emitFace(f, vb) || (int)vb.size() != count * 10) return false;
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)first * 40, (GLsizeiptr)vb.size() * sizeof(float), vb.data());
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, M.vboE);
+    for (int e : dirtyE) {
+        const Edge& Ed = E.edges[e];
+        bool visible = Ed.alive && (!Ed.hidden || st.showHidden) && D->tagVisible(Ed.tag);
+        int first = M.edgeFirst[e];
+        if (visible != (first >= 0)) return false;
+        if (!visible) continue;
+        LV ab[2];
+        edgeVerts(E, e, ab[0], ab[1]);
+        glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)first * sizeof(LV), sizeof(ab), ab);
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    M.rev = E.rev;
+    return true;
 }
 
 Renderer::Mesh& Renderer::mesh(int def) {
     Mesh& M = meshes_[def];
     const Entities& E = def < 0 ? D->model.root : D->model.defs[def].ents;
     uint64_t sig = styleSig();
-    if (M.rev != E.rev || M.sig != sig || (!M.vaoF)) buildMesh(M, E, sig);
+    if (M.rev != E.rev || M.sig != sig || (!M.vaoF)) {
+        QElapsedTimer t;
+        t.start();
+        if (!(M.vaoF && M.sig == sig && updateMesh(M, E))) buildMesh(M, E, sig);
+        lastBuildMs += t.nsecsElapsed() / 1e6;
+    }
     M.used = true;
     return M;
 }
@@ -798,7 +1010,7 @@ void Renderer::drawEdges(const std::vector<DrawItem>& items, int mode, float wid
         int cm = st.colorByAxis ? 2 : (st.colorByTag ? 1 : 0);
         lineProg_.setUniformValue("uColorMode", backEdges ? 0 : cm);
         lineProg_.setUniformValue("uFade", it.faded ? 0.6f : 0.0f);
-        lineProg_.setUniformValue("uExt", st.extension && mode == 0 ? (float)(4 * P->dpr) : 0.0f);
+        lineProg_.setUniformValue("uExt", st.extension && (mode == 0 || mode == 3) ? (float)(4 * P->dpr) : 0.0f);
         lineProg_.setUniformValue("uDepthBias", mode == 1 ? 0.0f : 0.0f);
         glBindVertexArray(M.vaoE);
         glDrawArrays(GL_LINES, 0, M.nEdgeVerts);
@@ -913,18 +1125,50 @@ void Renderer::drawSelection(const std::vector<DrawItem>& items) {
     Mesh& M = mesh(act->def);
     const Entities& E = D->active();
     float m[16], n[9];
-    // stipple faces
-    std::vector<std::pair<int, int>> ranges;
-    std::vector<std::pair<int, int>> hoverRanges;
-    for (auto& r : D->sel)
-        if (r.kind == EntKind::Face) {
-            auto f = M.faceRange.find(r.id);
-            if (f != M.faceRange.end()) ranges.push_back(f->second);
+    // Selected faces and edges are cached per (selection, geometry) so a large selection costs
+    // nothing per frame: faces as merged vertex ranges drawn in one call, edges in their own buffer.
+    SelCache& SC = selCache_;
+    if (SC.selRev != D->selRev || SC.geomRev != E.rev || SC.def != act->def || SC.mesh != M.vaoF || SC.meshRev != M.rev) {
+        SC.selRev = D->selRev; SC.geomRev = E.rev; SC.def = act->def; SC.mesh = M.vaoF; SC.meshRev = M.rev;
+        std::vector<std::pair<int, int>> rs;
+        for (auto& r : D->sel)
+            if (r.kind == EntKind::Face && r.id < (int)M.faceRange.size() && M.faceRange[r.id].second > 0) rs.push_back(M.faceRange[r.id]);
+        std::sort(rs.begin(), rs.end());
+        SC.firsts.clear(); SC.counts.clear();
+        for (auto& r : rs) {
+            if (!SC.firsts.empty() && SC.firsts.back() + SC.counts.back() == r.first) SC.counts.back() += r.second;
+            else { SC.firsts.push_back(r.first); SC.counts.push_back(r.second); }
         }
+        std::vector<LV> eb;
+        QColor selC = icolor::selection();
+        float cc[4] = {(float)selC.redF(), (float)selC.greenF(), (float)selC.blueF(), 1.f};
+        for (auto& r : D->sel)
+            if (r.kind == EntKind::Edge && r.id < (int)E.edges.size() && E.edges[r.id].alive) {
+                const Edge& Ed = E.edges[r.id];
+                for (int k = 0; k < 2; ++k) {
+                    LV x{};
+                    Vec3 p = E.verts[Ed.v[k]].p;
+                    x.p[0] = (float)p.x; x.p[1] = (float)p.y; x.p[2] = (float)p.z;
+                    memcpy(x.c, cc, 16);
+                    eb.push_back(x);
+                }
+            }
+        if (!SC.vao) { glGenVertexArrays(1, &SC.vao); glGenBuffers(1, &SC.vbo); }
+        glBindVertexArray(SC.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, SC.vbo);
+        glBufferData(GL_ARRAY_BUFFER, eb.size() * sizeof(LV), eb.data(), GL_STATIC_DRAW);
+        GLsizei st2 = sizeof(LV);
+        glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, p));
+        glEnableVertexAttribArray(1); glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, c));
+        glEnableVertexAttribArray(2); glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, n1));
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, n2));
+        glEnableVertexAttribArray(4); glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, st2, (void*)offsetof(LV, f));
+        SC.nEdgeVerts = (int)eb.size();
+    }
+    std::vector<std::pair<int, int>> hoverRanges;
     for (auto& r : P->hover)
         if (r.kind == EntKind::Face && !D->isSelected(r)) {
-            auto f = M.faceRange.find(r.id);
-            if (f != M.faceRange.end()) hoverRanges.push_back(f->second);
+            if (r.id < (int)M.faceRange.size() && M.faceRange[r.id].second > 0) hoverRanges.push_back(M.faceRange[r.id]);
         }
     stippleProg_.bind();
     toGL(vp_, m);
@@ -940,7 +1184,7 @@ void Renderer::drawSelection(const std::vector<DrawItem>& items) {
     glDepthMask(GL_FALSE);
     stippleProg_.setUniformValue("uColor", QVector4D(0.05f, 0.3f, 0.95f, 1.0f));
     stippleProg_.setUniformValue("uPattern", 0);
-    for (auto& r : ranges) glDrawArrays(GL_TRIANGLES, r.first, r.second);
+    if (!SC.firsts.empty()) glMultiDrawArrays(GL_TRIANGLES, SC.firsts.data(), SC.counts.data(), (GLsizei)SC.firsts.size());
     stippleProg_.setUniformValue("uColor", QVector4D(0.25f, 0.55f, 1.0f, 1.0f));
     stippleProg_.setUniformValue("uPattern", 1);
     for (auto& r : hoverRanges) glDrawArrays(GL_TRIANGLES, r.first, r.second);
@@ -950,11 +1194,16 @@ void Renderer::drawSelection(const std::vector<DrawItem>& items) {
     // selected / hovered edges: draw from scratch into dyn buffer
     QColor selC = icolor::selection();
     QColor hovC(80, 140, 255);
-    for (auto& r : D->sel) {
-        if (r.kind == EntKind::Edge && r.id < (int)E.edges.size() && E.edges[r.id].alive) {
-            const Edge& Ed = E.edges[r.id];
-            pushLine(act->xf.point(E.verts[Ed.v[0]].p), act->xf.point(E.verts[Ed.v[1]].p), selC);
-        }
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    if (SC.nEdgeVerts) {
+        lineProg_.bind();
+        setLineUniforms(2.0f, 0, 0, act->xf);
+        lineProg_.setUniformValue("uColorMode", 1);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glBindVertexArray(SC.vao);
+        glDrawArrays(GL_LINES, 0, SC.nEdgeVerts);
+        glDepthMask(GL_TRUE);
     }
     for (auto& r : P->hover)
         if (r.kind == EntKind::Edge && !D->isSelected(r) && r.id < (int)E.edges.size() && E.edges[r.id].alive) {
@@ -1081,7 +1330,12 @@ void Renderer::drawSection(const std::vector<DrawItem>& items) {
 
 // ------------------------------------------------------------------ main
 
+double Renderer::lastRenderMs = 0, Renderer::lastBuildMs = 0;
+
 void Renderer::render(const Params& p) {
+    QElapsedTimer frameClock;
+    frameClock.start();
+    lastBuildMs = 0;
     P = &p;
     D = p.doc;
     const Style& st = D->model.style;
@@ -1178,9 +1432,16 @@ void Renderer::render(const Params& p) {
     drawSection(items);
 
     // Edges
-    if (st.edges || st.faceStyle == FaceStyle::Wireframe) drawEdges(items, 0, 1.0f, st.edgeColor, 0, false);
+    const bool wantEdges = st.edges || st.faceStyle == FaceStyle::Wireframe;
+    const bool wantProfiles = st.profiles && st.faceStyle != FaceStyle::Wireframe;
+    if (wantEdges && wantProfiles) {
+        // one pass over the edge buffers instead of two
+        lineProg_.bind();
+        lineProg_.setUniformValue("uProfileWidth", (float)(st.profileWidth * P->dpr));
+        drawEdges(items, 3, 1.0f, st.edgeColor, 0, false);
+    } else if (wantEdges) drawEdges(items, 0, 1.0f, st.edgeColor, 0, false);
     if (st.showHidden) drawEdges(items, 2, 1.0f, QColor(110, 110, 110), 2, false);
-    if (st.profiles && st.faceStyle != FaceStyle::Wireframe) drawEdges(items, 1, (float)st.profileWidth, st.edgeColor, 0, false);
+    if (wantProfiles && !wantEdges) drawEdges(items, 1, (float)st.profileWidth, st.edgeColor, 0, false);
     if (st.backEdges && !st.xray && st.faceStyle != FaceStyle::Wireframe) {
         glDepthFunc(GL_GREATER);
         glDepthMask(GL_FALSE);
@@ -1333,6 +1594,7 @@ void Renderer::render(const Params& p) {
             it = meshes_.erase(it);
         } else ++it;
     }
+    lastRenderMs = frameClock.nsecsElapsed() / 1e6;
 }
 
 }  // namespace gable

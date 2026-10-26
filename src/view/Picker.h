@@ -1,6 +1,9 @@
 #pragma once
 #include "ui/Document.h"
 #include "view/Camera.h"
+#include <future>
+#include <map>
+#include <memory>
 #include <set>
 
 namespace gable {
@@ -44,7 +47,27 @@ public:
     double screenDistSeg(const Vec3& a, const Vec3& b, double x, double y, double* t = nullptr) const;
     bool faceHit(const Entities& E, int f, const Ray& localRay, double& tOut) const;
 
+    // Bounding-volume hierarchy over the faces and edges of one Entities, so a hover costs
+    // O(log n) instead of a pass over every entity. Rebuilt when the geometry's revision changes.
+    struct BVH {
+        struct Node { Vec3 lo, hi; int first = 0, count = 0, right = 0; };  // leaf when count > 0
+        std::vector<Node> nodes;
+        std::vector<int> items;
+        void build(std::vector<BBox>& boxes, const std::vector<int>& ids);
+    };
+    struct Index { uint64_t rev = 0; size_t nf = 0, ne = 0; BVH faces, edges; };
+    const Index* index(int def, const Entities& E, bool staleOk = false, bool force = false) const;
+    void prepare() const;
+    static int indexMin;   // entities below this count are scanned directly
+
 private:
+    struct CacheEntry {
+        std::unique_ptr<Index> idx;
+        std::future<std::unique_ptr<Index>> job;   // index being built on a worker thread
+        uint64_t pendingRev = 0;
+        int seen = 0;
+    };
+    mutable std::map<int, CacheEntry> cache_;
     void walk(int def, const Entities& E, const Mat4& xf, const InstPath& path, const Ray& ray, double x, double y,
               double vtol, double etol, DeepResult& r, int depth) const;
 };

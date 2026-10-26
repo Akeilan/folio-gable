@@ -32,7 +32,11 @@ Viewport::Viewport(Document* d, QWidget* parent)
         emit cameraChanged();
         update();
     });
-    connect(doc, &Document::changed, this, [this] { update(); });
+    connect(doc, &Document::changed, this, [this] { update(); indexTimer_.start(); });
+    // once the model has been still for a moment, build the pick index in the background
+    indexTimer_.setSingleShot(true);
+    indexTimer_.setInterval(250);
+    connect(&indexTimer_, &QTimer::timeout, this, [this] { picker.prepare(); });
     connect(doc, &Document::selectionChanged, this, [this] { update(); });
     connect(doc, &Document::viewChanged, this, [this] { update(); });
     connect(doc, &Document::contextChanged, this, [this] { update(); });

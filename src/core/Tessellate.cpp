@@ -2,6 +2,8 @@
 #include <GL/glu.h>
 #include <deque>
 #include <array>
+#include <algorithm>
+#include <cmath>
 
 #ifndef CALLBACK
 #define CALLBACK
@@ -52,17 +54,49 @@ bool tessellate(const std::vector<std::vector<Vec2>>& loops, TessResult& out) {
         if (signedArea2(out.pts.data(), 3) < 0) std::swap(out.tris[1], out.tris[2]);
         return true;
     }
+    // Fast path: a single strictly convex loop is a fan (most faces of real models).
+    if (loops.size() == 1 && loops[0].size() <= 64) {
+        const std::vector<Vec2>& L = loops[0];
+        const int n = (int)L.size();
+        double area = signedArea2(L.data(), n);
+        if (std::fabs(area) > 1e-12) {
+            const double sgn = area > 0 ? 1.0 : -1.0;
+            bool convex = true;
+            for (int i = 0; i < n && convex; ++i) {
+                const Vec2& a = L[i];
+                const Vec2& b = L[(i + 1) % n];
+                const Vec2& c = L[(i + 2) % n];
+                double cr = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+                // strictly convex corners only; collinear or reflex corners go to the general tessellator
+                double scale = std::max(1e-300, (b - a).length() * (c - b).length());
+                if (cr * sgn <= 1e-9 * scale) convex = false;
+            }
+            if (convex) {
+                out.tris.reserve((n - 2) * 3);
+                for (int i = 1; i + 1 < n; ++i) {
+                    out.tris.push_back(0);
+                    if (sgn > 0) { out.tris.push_back(i); out.tris.push_back(i + 1); }
+                    else { out.tris.push_back(i + 1); out.tris.push_back(i); }
+                }
+                return true;
+            }
+        }
+    }
     TessCtx ctx;
     ctx.out = &out;
-    GLUtesselator* t = gluNewTess();
-    gluTessCallback(t, GLU_TESS_BEGIN_DATA, (void(CALLBACK*)())cbBegin);
-    gluTessCallback(t, GLU_TESS_EDGE_FLAG_DATA, (void(CALLBACK*)())cbEdgeFlag);
-    gluTessCallback(t, GLU_TESS_VERTEX_DATA, (void(CALLBACK*)())cbVertex);
-    gluTessCallback(t, GLU_TESS_END_DATA, (void(CALLBACK*)())cbEnd);
-    gluTessCallback(t, GLU_TESS_ERROR_DATA, (void(CALLBACK*)())cbError);
-    gluTessCallback(t, GLU_TESS_COMBINE_DATA, (void(CALLBACK*)())cbCombine);
-    gluTessProperty(t, GLU_TESS_WINDING_RULE, GLU_TESS_WINDING_ODD);
-    gluTessNormal(t, 0, 0, 1);
+    // One tessellator per thread, set up once (creating one per face is expensive).
+    thread_local GLUtesselator* t = nullptr;
+    if (!t) {
+        t = gluNewTess();
+        gluTessCallback(t, GLU_TESS_BEGIN_DATA, (void(CALLBACK*)())cbBegin);
+        gluTessCallback(t, GLU_TESS_EDGE_FLAG_DATA, (void(CALLBACK*)())cbEdgeFlag);
+        gluTessCallback(t, GLU_TESS_VERTEX_DATA, (void(CALLBACK*)())cbVertex);
+        gluTessCallback(t, GLU_TESS_END_DATA, (void(CALLBACK*)())cbEnd);
+        gluTessCallback(t, GLU_TESS_ERROR_DATA, (void(CALLBACK*)())cbError);
+        gluTessCallback(t, GLU_TESS_COMBINE_DATA, (void(CALLBACK*)())cbCombine);
+        gluTessProperty(t, GLU_TESS_WINDING_RULE, GLU_TESS_WINDING_ODD);
+        gluTessNormal(t, 0, 0, 1);
+    }
     gluTessBeginPolygon(t, &ctx);
     int base = 0;
     for (auto& l : loops) {
@@ -76,7 +110,6 @@ bool tessellate(const std::vector<std::vector<Vec2>>& loops, TessResult& out) {
         base += (int)l.size();
     }
     gluTessEndPolygon(t);
-    gluDeleteTess(t);
     // GLU with normal +Z emits CCW triangles.
     return !ctx.error && !out.tris.empty();
 }
