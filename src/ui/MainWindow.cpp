@@ -197,6 +197,7 @@ void MainWindow::buildTools() {
     view_->registerTool(new ImageTool(view_));
     view_->registerTool(new TexturePositionTool(view_));
     view_->registerTool(new MatchPhotoTool(view_));
+    view_->registerTool(new SolidInspectorTool(view_));
     paint->currentMaterial = [this] { return materials_ ? materials_->current() : -1; };
     paint->sampled = [this](int m) { if (materials_) materials_->setCurrent(m); };
     text->editText = [this](QString& t) {
@@ -462,6 +463,7 @@ void MainWindow::buildActions() {
     addAct("sbcontours", "From Contours", QKeySequence(), [this] { fromContours(); }, "sbcontours");
     addAct("sbdetail", "Add Detail", QKeySequence(), [this] { addDetail(); });
     addAct("solid_outer", "Outer Shell", QKeySequence(), [this] { solidOp((int)SolidOp::OuterShell); }, "solid");
+    addAct("solidinspector", "Solid Inspector", QKeySequence(), [this] { view_->setTool("solidinspect"); }, "solidinspector");
     addAct("solid_union", "Union", QKeySequence(), [this] { solidOp((int)SolidOp::Union); });
     addAct("solid_subtract", "Subtract", QKeySequence(), [this] { solidOp((int)SolidOp::Subtract); });
     addAct("solid_intersect", "Intersect", QKeySequence(), [this] { solidOp((int)SolidOp::Intersect); });
@@ -483,6 +485,7 @@ void MainWindow::buildTray() {
     tray_ = new Tray;
     auto* info = new EntityInfoPanel(doc_);
     connect(info, &EntityInfoPanel::requestRedraw, view_, [this] { view_->update(); });
+    connect(info, &EntityInfoPanel::inspectSolid, this, [this] { view_->setTool("solidinspect"); });
     tray_->addPanel("Entity Info", info, true);
     materials_ = new MaterialsPanel(doc_);
     connect(materials_, &MaterialsPanel::materialChosen, this, [this](int) { view_->setTool("paint"); });
@@ -1461,6 +1464,7 @@ void MainWindow::contextMenu(const QPoint& at) {
     if (ni) {
         m.addAction(act_["explode"]);
         m.addAction(act_["makeunique"]);
+        m.addAction(act_["solidinspector"]);
         bool locked = false;
         for (int i : doc_->selectedInstances()) locked |= doc_->active().insts[i].locked;
         m.addAction(locked ? act_["unlock"] : act_["lock"]);

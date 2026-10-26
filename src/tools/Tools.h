@@ -1,6 +1,7 @@
 // Folio Gable — all interactive tools.
 #pragma once
 #include "tools/Tool.h"
+#include "core/Geometry.h"
 #include "ui/Document.h"
 #include <QElapsedTimer>
 #include <functional>
@@ -484,6 +485,39 @@ private:
     QPointF toScreen(const Vec2& q) const;
     int gripAt(double x, double y) const;
     void solve();
+};
+
+// Solid Inspector: shows what stops a group or component from being a solid (holes, stray edges,
+// faces inside, reversed faces, edges shared by several solids, groups inside) and fixes what
+// can be fixed. Works on the selected group, or the group being edited.
+class SolidInspectorTool : public Tool {
+    friend class Auditor;
+public:
+    explicit SolidInspectorTool(Viewport* v) : Tool(v) {}
+    QString id() const override { return "solidinspect"; }
+    QString title() const override { return "Solid Inspector"; }
+    void activate() override;
+    void deactivate() override { active_ = false; }
+    void reset() override { active_ = false; toSelectTool(); }
+    void mousePress(const MouseEv& e) override;
+    bool keyPress(QKeyEvent* e) override;
+    void draw(Overlay& ov) override;
+    QString status() const override { return status_; }
+    QCursor cursor() const override { return Qt::ArrowCursor; }
+    bool busy() const override { return active_; }
+    bool isActive() const { return active_; }
+    int fixAll();                 // returns the number of changes
+    const geom::SolidReport& report() const { return report_; }
+    static QString describe(const geom::SolidReport& r);
+private:
+    bool active_ = false;
+    int inst_ = -1;               // instance in the active context, or -1 for the open context itself
+    int def_ = -1;
+    Mat4 xf_;
+    geom::SolidReport report_;
+    QString status_;
+    Entities* target();
+    void inspect();
 };
 
 class TapeTool : public InferTool {

@@ -485,6 +485,66 @@ static void testExport3D() {
     CHECK(zip.startsWith("PK\x03\x04") && zip.contains("3D/3dmodel.model") && zip.contains("[Content_Types].xml"));
 }
 
+static void testSolidRepair() {
+    // a closed box is clean
+    Entities E;
+    box(E, 0, 0, 1000, 800, 600);
+    geom::SolidReport r = geom::inspectSolid(E);
+    CHECK(r.clean());
+    // a missing face: one hole of four edges, closed again with a face
+    int top = findFaceAt(E, Vec3(500, 400, 600), Vec3(0, 0, 1));
+    E.removeFace(top);
+    r = geom::inspectSolid(E);
+    CHECK(!r.solid() && r.holes.size() == 1 && r.holeEdges() == 4);
+    CHECK(geom::repairSolid(E) >= 1);
+    CHECK(geom::inspectSolid(E).clean() && geom::isSolid(E));
+    NEAR(geom::volume(E), 1000.0 * 800 * 600, 1);
+    // a stray edge and a reversed face
+    geom::insertSegment(E, Vec3(2000, 0, 0), Vec3(2500, 0, 0));
+    int side = findFaceAt(E, Vec3(1000, 400, 300), Vec3(1, 0, 0));
+    geom::reverseFace(E, side);
+    r = geom::inspectSolid(E);
+    CHECK(r.strayEdges.size() == 1 && r.reversedFaces.size() == 1 && r.reversedFaces[0] == side);
+    geom::repairSolid(E);
+    r = geom::inspectSolid(E);
+    CHECK(r.clean());
+    NEAR(geom::volume(E), 1000.0 * 800 * 600, 1);
+    // inside out as a whole: every face turns
+    Entities I;
+    box(I, 0, 0, 500, 500, 500);
+    for (int f = 0; f < (int)I.faces.size(); ++f) if (I.faces[f].alive) geom::reverseFace(I, f);
+    CHECK(geom::inspectSolid(I).reversedFaces.size() == 6);
+    geom::repairSolid(I);
+    CHECK(geom::volume(I) > 0 && geom::inspectSolid(I).clean());
+    // an inner wall dividing the box: the wall goes and the split faces join
+    Entities W;
+    box(W, 0, 0, 1000, 1000, 1000);
+    geom::addPolyline(W, {Vec3(500, 0, 0), Vec3(500, 1000, 0), Vec3(500, 1000, 1000), Vec3(500, 0, 1000)}, true);
+    r = geom::inspectSolid(W);
+    CHECK(r.innerFaces.size() == 1 && !r.solid());
+    geom::repairSolid(W);
+    CHECK(geom::inspectSolid(W).clean() && faces(W) == 6);
+    NEAR(geom::volume(W), 1e9, 1);
+    // a hole that isn't flat closes with soft triangles
+    Entities N;
+    box(N, 0, 0, 1000, 1000, 1000);
+    int t2 = findFaceAt(N, Vec3(500, 500, 1000), Vec3(0, 0, 1));
+    N.removeFace(t2);
+    int corner = N.findVertex(Vec3(1000, 1000, 1000));
+    N.moveVertex(corner, Vec3(1000, 1000, 1300));
+    for (int f = 0; f < (int)N.faces.size(); ++f) if (N.faces[f].alive) N.faces[f].plane = Plane(geom::newellNormal(N, N.faces[f].outer).normalized(), N.verts[N.faces[f].outer[0]].p);
+    geom::fixWarpedFaces(N, [&] { std::vector<int> v; for (int f = 0; f < (int)N.faces.size(); ++f) if (N.faces[f].alive) v.push_back(f); return v; }());
+    CHECK(geom::inspectSolid(N).holes.size() == 1);
+    geom::repairSolid(N);
+    CHECK(geom::inspectSolid(N).clean() && geom::volume(N) > 1e9);
+    // two boxes sharing an edge: reported, not "fixed"
+    Entities T;
+    box(T, 0, 0, 1000, 1000, 1000);
+    box(T, 1000, 1000, 2000, 2000, 1000);
+    r = geom::inspectSolid(T);
+    CHECK(!r.extraEdges.empty());
+}
+
 static void testMatchPhoto() {
     struct Cam { Vec3 eye, target; double fov; };
     for (Cam c : {Cam{Vec3(-5200, -7300, 1600), Vec3(1200, 900, 400), 48}, Cam{Vec3(6100, -4800, 2600), Vec3(400, 700, 0), 36},
@@ -551,6 +611,7 @@ int main(int argc, char** argv) {
     testTextures();
     testMatchPhoto();
     testExport3D();
+    testSolidRepair();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

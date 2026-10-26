@@ -90,6 +90,27 @@ std::vector<int> selectionVertices(const Entities& E, const std::vector<EntRef>&
 std::vector<EntRef> connected(const Entities& E, EntRef start, bool all);
 std::vector<int> curveEdges(const Entities& E, int curve);
 
+// What keeps a set of geometry from being a solid (closed, every edge between exactly two faces,
+// no groups inside), each problem with the entities to point at.
+struct SolidReport {
+    std::vector<std::vector<int>> holes;   // open borders: loops (or runs) of edges with one face
+    std::vector<int> strayEdges;           // edges with no face
+    std::vector<int> innerFaces;           // faces inside the volume (every edge shared by 3+ faces)
+    std::vector<int> extraEdges;           // other edges shared by 3+ faces (solids touching along an edge)
+    std::vector<int> reversedFaces;        // faces facing the other way from the rest of their shell / inwards
+    std::vector<int> nested;               // groups and components inside
+    bool solid() const {
+        return holes.empty() && strayEdges.empty() && innerFaces.empty() && extraEdges.empty() && nested.empty();
+    }
+    bool clean() const { return solid() && reversedFaces.empty(); }
+    int holeEdges() const { int n = 0; for (auto& h : holes) n += (int)h.size(); return n; }
+};
+SolidReport inspectSolid(const Entities& E);
+// Fixes what can be fixed: erases stray edges and inner faces, closes holes (flat ones with one
+// face, others with triangles), and turns every closed shell to face outwards. Returns the number
+// of changes; nested groups and edges shared by several solids are left for the person.
+int repairSolid(Entities& E);
+
 // Volume of a closed manifold (0 if not solid).
 bool isSolid(const Entities& E);
 double volume(const Entities& E);
