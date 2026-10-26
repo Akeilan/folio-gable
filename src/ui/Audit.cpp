@@ -365,6 +365,13 @@ private:
         click(Vec3(1000, 0, 1000));
         key(Qt::Key_Up);
         move(Vec3(1000, 0, 1300));
+        {
+            // the preview updates the moved faces and edges in place; it must draw exactly what a rebuild draws
+            QImage inPlace = v->renderImage(320, 240, false);
+            v->invalidateMeshes();
+            QImage rebuilt = v->renderImage(320, 240, false);
+            check(!inPlace.isNull() && inPlace == rebuilt, "in-place mesh update matches a full rebuild");
+        }
         type("300");
         bool up = false;
         for (auto& vx : E().verts) if (vx.alive && near(vx.p.z, 1300, 0.01)) up = true;
@@ -836,8 +843,15 @@ private:
                         QWidget* x = ws[i];
                         QString what = x->metaObject()->className() + QString(" ") +
                                        (qobject_cast<QAbstractButton*>(x) ? qobject_cast<QAbstractButton*>(x)->text() : QString());
+                        if (qEnvironmentVariableIsSet("AUDIT_TRACE")) say("   try " + what);
                         if (auto* b = qobject_cast<QAbstractButton*>(x)) {
-                            if (auto* tb = qobject_cast<QToolButton*>(b); tb && tb->menu()) { popupIndex = 0; tb->showMenu(); settle(60); popupIndex = -1; }
+                            if (auto* tb = qobject_cast<QToolButton*>(b); tb && tb->menu()) {
+                                // run the menu's first entry directly: opening an instant-popup menu blocks
+                                // in its own event loop, which newer Qt versions do not let the closer end
+                                for (QAction* a : tb->menu()->actions())
+                                    if (!a->isSeparator() && a->isEnabled() && !a->menu()) { a->trigger(); break; }
+                                settle(60);
+                            }
                             else b->click();
                         } else if (auto* c = qobject_cast<QComboBox*>(x)) {
                             if (c->count() > 1) c->setCurrentIndex((c->currentIndex() + 1) % c->count());

@@ -380,18 +380,30 @@ int Model::instanceCount(int def) const {
     return n;
 }
 
+BBox Entities::ownBBox() const {
+    // vertex bounds are cached by revision; guides and dimensions are few and read each time
+    if (ownBoxRev_ != rev || ownBoxN_ != verts.size()) {
+        BBox b;
+        for (auto& v : verts)
+            if (v.alive) b.add(v.p);
+        ownBox_ = b;
+        ownBoxRev_ = rev;
+        ownBoxN_ = verts.size();
+    }
+    BBox b = ownBox_;
+    for (auto& g : guides)
+        if (g.alive && g.isPoint) b.add(g.p);
+    for (auto& d : dims)
+        if (d.alive) { b.add(d.a); b.add(d.b); }
+    return b;
+}
+
 BBox Model::entitiesBBox(const Entities& e, bool includeHidden) const {
-    BBox b;
-    for (auto& v : e.verts)
-        if (v.alive) b.add(v.p);
+    BBox b = e.ownBBox();
     for (auto& in : e.insts) {
         if (!in.alive || in.def < 0 || (!includeHidden && in.hidden)) continue;
         b.add(defBBox(in.def).transformed(in.xf));
     }
-    for (auto& g : e.guides)
-        if (g.alive && g.isPoint) b.add(g.p);
-    for (auto& d : e.dims)
-        if (d.alive) { b.add(d.a); b.add(d.b); }
     return b;
 }
 

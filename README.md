@@ -6,10 +6,21 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.1.0_amd64.deb
+sudo apt install ./folio-gable_2.2.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
+
+## What's new in 2.2
+
+Large models (100,000+ faces, such as an imported house or a terrain) stay responsive:
+- Hovering, inference and clicking use a spatial index built in the background, so they no longer scan the whole model on every mouse move.
+- Move, Rotate and Scale previews redraw only what moves.
+- Edits rebuild the display faster (convex faces skip the general tessellator; smooth-edge normals are worked out once per vertex).
+- Undo and redo copy the model once instead of twice; Select All on 300,000 entities is instant.
+- Edges and profiles draw in one pass.
+
+`folio-gable --bench` builds three 100,000-face models and prints the timings.
 
 ## What's new in 2.0
 

@@ -1,7 +1,130 @@
 #include "view/Picker.h"
 #include "core/Geometry.h"
+#include <algorithm>
+#include <numeric>
 
 namespace gable {
+
+int Picker::indexMin = 3000;
+
+void Picker::BVH::build(std::vector<BBox>& boxes, const std::vector<int>& ids) {
+    nodes.clear();
+    items = ids;
+    if (items.empty()) return;
+    nodes.reserve(items.size() / 2 + 1);
+    std::vector<Vec3> cen(boxes.size());
+    for (int i : items) cen[i] = boxes[i].center();
+    struct Job { int node, a, b; };
+    std::vector<Job> stack;
+    nodes.push_back(Node());
+    stack.push_back({0, 0, (int)items.size()});
+    while (!stack.empty()) {
+        Job j = stack.back();
+        stack.pop_back();
+        BBox nb, cb;
+        for (int k = j.a; k < j.b; ++k) { nb.add(boxes[items[k]]); cb.add(cen[items[k]]); }
+        nodes[j.node].lo = nb.lo;
+        nodes[j.node].hi = nb.hi;
+        int n = j.b - j.a;
+        Vec3 ext = cb.size();
+        if (n <= 6 || (ext.x <= 0 && ext.y <= 0 && ext.z <= 0)) {
+            nodes[j.node].first = j.a;
+            nodes[j.node].count = n;
+            continue;
+        }
+        int axis = ext.x >= ext.y && ext.x >= ext.z ? 0 : (ext.y >= ext.z ? 1 : 2);
+        int mid = j.a + n / 2;
+        auto key = [&](int i) { const Vec3& c = cen[i]; return axis == 0 ? c.x : (axis == 1 ? c.y : c.z); };
+        std::nth_element(items.begin() + j.a, items.begin() + mid, items.begin() + j.b,
+                         [&](int x, int y) { return key(x) < key(y); });
+        int left = (int)nodes.size();
+        nodes.push_back(Node());
+        int right = (int)nodes.size();
+        nodes.push_back(Node());
+        nodes[j.node].first = left;
+        nodes[j.node].right = right;
+        nodes[j.node].count = 0;
+        stack.push_back({left, j.a, mid});
+        stack.push_back({right, mid, j.b});
+    }
+}
+
+void Picker::prepare() const {
+    // called when the model has been still for a moment: start building indexes ahead of the next hover
+    index(-1, doc->model.root, false, true);
+    int ad = doc->activeDef();
+    if (ad >= 0) index(ad, doc->model.defs[ad].ents, false, true);
+}
+
+const Picker::Index* Picker::index(int def, const Entities& E, bool staleOk, bool force) const {
+    if (E.faces.size() + E.edges.size() < (size_t)indexMin) return nullptr;
+    CacheEntry& c = cache_[def];
+    auto matches = [&](const Index* x) { return x && x->rev == E.rev && x->nf == E.faces.size() && x->ne == E.edges.size(); };
+    if (c.job.valid() && c.job.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        auto done = c.job.get();
+        if (matches(done.get()) || (staleOk && done && done->nf == E.faces.size() && done->ne == E.edges.size())) c.idx = std::move(done);
+    }
+    if (matches(c.idx.get())) return c.idx.get();
+    // During a Move/Rotate/Scale preview only the excluded (moving) vertices change, and every
+    // face or edge touching them is skipped, so the index from before the preview still holds.
+    if (staleOk && c.idx && c.idx->nf == E.faces.size() && c.idx->ne == E.edges.size()) return c.idx.get();
+    if (staleOk) return nullptr;
+    // Geometry that changes on every pick (a Move or Push/Pull preview) is scanned directly;
+    // once it holds still for a second pick the index is built on a worker thread, and picks
+    // scan directly until it is ready.
+    if (c.pendingRev != E.rev) { c.pendingRev = E.rev; c.seen = 0; }
+    if ((++c.seen < 2 && !force) || c.job.valid()) return nullptr;
+    auto boxes = std::make_shared<std::vector<BBox>>(E.faces.size() + E.edges.size());
+    auto fids = std::make_shared<std::vector<int>>(), eids = std::make_shared<std::vector<int>>();
+    fids->reserve(E.faces.size());
+    eids->reserve(E.edges.size());
+    const size_t nf = E.faces.size();
+    for (int i = 0; i < (int)nf; ++i) {
+        const Face& F = E.faces[i];
+        if (!F.alive || F.outer.empty()) continue;
+        for (int v : F.outer) (*boxes)[i].add(E.verts[v].p);
+        fids->push_back(i);
+    }
+    for (int i = 0; i < (int)E.edges.size(); ++i) {
+        const Edge& Ed = E.edges[i];
+        if (!Ed.alive) continue;
+        (*boxes)[nf + i].add(E.verts[Ed.v[0]].p);
+        (*boxes)[nf + i].add(E.verts[Ed.v[1]].p);
+        eids->push_back(i);
+    }
+    uint64_t rev = E.rev;
+    size_t ne = E.edges.size();
+    c.job = std::async(std::launch::async, [boxes, fids, eids, rev, nf, ne]() {
+        auto idx = std::make_unique<Index>();
+        idx->rev = rev;
+        idx->nf = nf;
+        idx->ne = ne;
+        std::vector<BBox> fb(boxes->begin(), boxes->begin() + nf), eb(boxes->begin() + nf, boxes->end());
+        idx->faces.build(fb, *fids);
+        idx->edges.build(eb, *eids);
+        return idx;
+    });
+    return nullptr;
+}
+
+// Ray against a box (slab test), local space.
+static bool rayBox(const Ray& r, const Vec3& lo, const Vec3& hi, double tol) {
+    double t0 = 0, t1 = 1e300;
+    const double o[3] = {r.o.x, r.o.y, r.o.z}, d[3] = {r.d.x, r.d.y, r.d.z};
+    const double l[3] = {lo.x - tol, lo.y - tol, lo.z - tol}, h[3] = {hi.x + tol, hi.y + tol, hi.z + tol};
+    for (int k = 0; k < 3; ++k) {
+        if (std::fabs(d[k]) < 1e-300) {
+            if (o[k] < l[k] || o[k] > h[k]) return false;
+            continue;
+        }
+        double a = (l[k] - o[k]) / d[k], b = (h[k] - o[k]) / d[k];
+        if (a > b) std::swap(a, b);
+        t0 = std::max(t0, a);
+        t1 = std::min(t1, b);
+        if (t0 > t1) return false;
+    }
+    return true;
+}
 
 double Picker::screenDistSeg(const Vec3& aIn, const Vec3& bIn, double x, double y, double* tOut) const {
     Vec3 a = aIn, b = bIn;
@@ -71,8 +194,26 @@ void Picker::walk(int def, const Entities& E, const Mat4& xf, const InstPath& pa
     const bool exclude = isActive && (!exVerts.empty() || !exInsts.empty());
     auto depthOf = [&](const Vec3& w) { return (w - cam->s->eye).dot(f); };
     // faces
+    const Index* ix = index(def, E, exclude && !exVerts.empty());
+    std::vector<int> cand;
     if (st.faceStyle != FaceStyle::Wireframe) {
-        for (int i = 0; i < (int)E.faces.size(); ++i) {
+        if (ix) {
+            // faces whose box the (local) ray passes through
+            const BVH& B = ix->faces;
+            std::vector<int> stack;
+            if (!B.nodes.empty()) stack.push_back(0);
+            while (!stack.empty()) {
+                const BVH::Node& n = B.nodes[stack.back()];
+                stack.pop_back();
+                double tol = kTol + 1e-9 * (n.hi - n.lo).length();
+                if (!rayBox(lr, n.lo, n.hi, tol)) continue;
+                if (n.count) cand.insert(cand.end(), B.items.begin() + n.first, B.items.begin() + n.first + n.count);
+                else { stack.push_back(n.first); stack.push_back(n.right); }
+            }
+        }
+        const int nCand = ix ? (int)cand.size() : (int)E.faces.size();
+        for (int ci = 0; ci < nCand; ++ci) {
+            const int i = ix ? cand[ci] : ci;
             const Face& F = E.faces[i];
             if (!F.alive || (F.hidden && !st.showHidden) || !doc->tagVisible(F.tag)) continue;
             if (exclude) {
@@ -94,7 +235,37 @@ void Picker::walk(int def, const Entities& E, const Mat4& xf, const InstPath& pa
     }
     // edges & vertices
     std::vector<char> vdone;
-    for (int i = 0; i < (int)E.edges.size(); ++i) {
+    cand.clear();
+    if (ix) {
+        // edges in nodes the pick cone can reach: a point within tol pixels of the cursor lies
+        // within tol * (pixel size at its depth) of the pick ray
+        const double tolPx = std::max(etol, vtol + 2) * 1.5 + 2;
+        const bool persp = cam->s->perspective;
+        const Vec3 eye = cam->s->eye;
+        const double pixAt1 = persp ? cam->pixelSize(eye + f) : cam->pixelSize(eye);
+        const double sMax = std::max({xf.axis(0).length(), xf.axis(1).length(), xf.axis(2).length()});
+        const double nearZ = std::max(cam->nearZ, 1e-3);
+        const BVH& B = ix->edges;
+        std::vector<int> stack;
+        if (!B.nodes.empty()) stack.push_back(0);
+        while (!stack.empty()) {
+            const BVH::Node& n = B.nodes[stack.back()];
+            stack.pop_back();
+            Vec3 c = xf.point((n.lo + n.hi) * 0.5);
+            double rad = (n.hi - n.lo).length() * 0.5 * sMax + 1e-6;
+            double z = (c - eye).dot(f);
+            if (persp && z + rad < nearZ) continue;
+            Vec3 q = c - ray.o;
+            double perp = (q - ray.d * q.dot(ray.d)).length();
+            double allow = tolPx * (persp ? pixAt1 * std::max(z + rad, nearZ) : pixAt1);
+            if (perp - rad > allow) continue;
+            if (n.count) cand.insert(cand.end(), B.items.begin() + n.first, B.items.begin() + n.first + n.count);
+            else { stack.push_back(n.first); stack.push_back(n.right); }
+        }
+    }
+    const int nEdges = ix ? (int)cand.size() : (int)E.edges.size();
+    for (int ci = 0; ci < nEdges; ++ci) {
+        const int i = ix ? cand[ci] : ci;
         const Edge& Ed = E.edges[i];
         if (!Ed.alive || ((Ed.hidden || Ed.soft) && !st.showHidden) || !doc->tagVisible(Ed.tag)) continue;
         if (exclude && (exVerts.count(Ed.v[0]) || exVerts.count(Ed.v[1]))) continue;

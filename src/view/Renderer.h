@@ -34,6 +34,10 @@ public:
         bool forExport = false;
     };
     void render(const Params& p);
+    // Timings of the last frame (CPU side, milliseconds): whole render() call and mesh rebuilds in it.
+    static double lastRenderMs, lastBuildMs;
+    // Forget built meshes so the next frame rebuilds everything (tests compare the two paths).
+    void invalidateMeshes() { for (auto& [k, m] : meshes_) m.rev = 0; }
 
     // Section cut geometry, world space (for picking/inference reuse)
     struct SectionCache {
@@ -50,9 +54,10 @@ private:
         GLuint vaoF = 0, vboF = 0, vaoE = 0, vboE = 0;
         std::vector<Batch> batches;
         int nEdgeVerts = 0;
-        std::unordered_map<int, std::pair<int, int>> faceRange;  // face -> (first, count)
-        std::unordered_map<int, int> edgeFirst;                  // edge -> first vertex
+        std::vector<std::pair<int, int>> faceRange;  // face -> (first, count); count 0 = not drawn
+        std::vector<int> edgeFirst;                  // edge -> first vertex, -1 = not drawn
         bool used = false;
+        std::vector<uint64_t> faceSig, edgeSig;   // what each face/edge was built from
     };
     std::map<int, Mesh> meshes_;  // key: def index, -1 = root
     std::map<qint64, std::unique_ptr<QOpenGLTexture>> textures_;  // key: material index
@@ -64,6 +69,14 @@ private:
     int shadowSize_ = 4096;
     bool inited_ = false;
     SectionCache section_;
+    struct SelCache {
+        uint64_t selRev = 0, geomRev = 0, meshRev = 0;
+        int def = -2;
+        GLuint mesh = 0, vao = 0, vbo = 0;
+        std::vector<GLint> firsts;
+        std::vector<GLsizei> counts;
+        int nEdgeVerts = 0;
+    } selCache_;
 
     // per-frame state
     const Params* P = nullptr;
@@ -75,7 +88,11 @@ private:
     bool shadowsOn_ = false;
 
     Mesh& mesh(int def);
+    struct FaceGen;
+    struct LV;
     void buildMesh(Mesh& m, const Entities& E, uint64_t sig);
+    bool updateMesh(Mesh& m, const Entities& E);
+    void edgeVerts(const Entities& E, int e, LV& a, LV& b) const;
     uint64_t styleSig() const;
     QOpenGLTexture* texture(int mat);
 

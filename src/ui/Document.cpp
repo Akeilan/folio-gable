@@ -76,20 +76,24 @@ void Document::closeAllContexts() {
 void Document::setSelection(const std::vector<EntRef>& s) {
     sel.clear();
     selSet_.clear();
+    ++selRev;
     for (auto& r : s)
-        if (selSet_.insert(r).second) sel.push_back(r);
+        if (selSet_.insert(r)) sel.push_back(r);
+    ++selRev;
     emit selectionChanged();
 }
 
 void Document::addToSelection(const std::vector<EntRef>& s) {
     for (auto& r : s)
-        if (selSet_.insert(r).second) sel.push_back(r);
+        if (selSet_.insert(r)) sel.push_back(r);
+    ++selRev;
     emit selectionChanged();
 }
 
 void Document::removeFromSelection(const std::vector<EntRef>& s) {
     for (auto& r : s) selSet_.erase(r);
     sel.erase(std::remove_if(sel.begin(), sel.end(), [&](const EntRef& r) { return !selSet_.count(r); }), sel.end());
+    ++selRev;
     emit selectionChanged();
 }
 
@@ -106,6 +110,8 @@ void Document::clearSelection() {
     if (sel.empty()) return;
     sel.clear();
     selSet_.clear();
+    ++selRev;
+    ++selRev;
     emit selectionChanged();
 }
 
@@ -181,7 +187,7 @@ BBox Document::selectionBBox() const {
 
 // ---------------------------------------------------------------- undo
 
-std::shared_ptr<Document::Snapshot> Document::takeSnapshot() {
+std::shared_ptr<Document::Snapshot> Document::takeSnapshot(bool steal) {
     auto snap = std::make_shared<Snapshot>();
     // metadata without geometry
     Entities rootTmp = std::move(model.root);
@@ -200,12 +206,23 @@ std::shared_ptr<Document::Snapshot> Document::takeSnapshot() {
     };
     // The root and the entities being edited are always copied (they may have been changed
     // without a revision bump); other definitions are shared while their revision is unchanged.
+    // steal: the current state is about to be replaced (undo/redo), so the root and the active
+    // entities move into the snapshot instead of being copied.
+    int act = activeDef();   // before the root may be moved out
     rootCache_.second.reset();
-    snap->root = share(rootCache_, model.root);
+    if (steal) {
+        snap->root = std::make_shared<const Entities>(std::move(model.root));
+        rootCache_ = {snap->root->rev, snap->root};
+    } else snap->root = share(rootCache_, model.root);
     defCache_.resize(model.defs.size());
-    int act = activeDef();
     if (act >= 0 && act < (int)defCache_.size()) defCache_[act].second.reset();
-    for (size_t i = 0; i < model.defs.size(); ++i) snap->defs.push_back(share(defCache_[i], model.defs[i].ents));
+    for (size_t i = 0; i < model.defs.size(); ++i) {
+        if (steal && (int)i == act) {
+            auto p = std::make_shared<const Entities>(std::move(model.defs[i].ents));
+            defCache_[i] = {p->rev, p};
+            snap->defs.push_back(p);
+        } else snap->defs.push_back(share(defCache_[i], model.defs[i].ents));
+    }
     return snap;
 }
 
@@ -271,7 +288,9 @@ void Document::restore(const UndoEntry& e) {
     }
     sel.clear();
     selSet_.clear();
+    ++selRev;
     emit contextChanged();
+    ++selRev;
     emit selectionChanged();
     notifyChanged();
 }
@@ -281,7 +300,7 @@ void Document::undo() {
     if (undo_.empty()) return;
     UndoEntry e = undo_.back();
     undo_.pop_back();
-    redo_.push_back({e.name, takeSnapshot(), editPath});
+    redo_.push_back({e.name, takeSnapshot(true), editPath});
     restore(e);
     emit undoStateChanged();
 }
@@ -290,7 +309,7 @@ void Document::redo() {
     if (redo_.empty()) return;
     UndoEntry e = redo_.back();
     redo_.pop_back();
-    undo_.push_back({e.name, takeSnapshot(), editPath});
+    undo_.push_back({e.name, takeSnapshot(true), editPath});
     restore(e);
     emit undoStateChanged();
 }
@@ -303,12 +322,14 @@ void Document::newModel() {
     editPath.clear();
     sel.clear();
     selSet_.clear();
+    ++selRev;
     undo_.clear();
     redo_.clear();
     rootCache_ = {};
     defCache_.clear();
     modified = false;
     emit contextChanged();
+    ++selRev;
     emit selectionChanged();
     emit changed();
     emit fileChanged();
@@ -321,16 +342,21 @@ bool Document::load(const QString& path, QString* err) {
     Model m;
     if (!loadModel(m, f.readAll(), err)) return false;
     model = std::move(m);
+    // fresh revisions: caches keyed on them (meshes, pick index, bounds) must not match the old model
+    model.root.touch();
+    for (auto& d : model.defs) d.ents.touch();
     filePath = path;
     editPath.clear();
     sel.clear();
     selSet_.clear();
+    ++selRev;
     undo_.clear();
     redo_.clear();
     rootCache_ = {};
     defCache_.clear();
     modified = false;
     emit contextChanged();
+    ++selRev;
     emit selectionChanged();
     emit changed();
     emit fileChanged();
@@ -372,6 +398,8 @@ void Document::eraseSelection() {
     E.touch();
     sel.clear();
     selSet_.clear();
+    ++selRev;
+    ++selRev;
     emit selectionChanged();
 }
 

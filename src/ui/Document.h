@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QString>
 #include <set>
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -38,6 +40,7 @@ public:
     // ---- selection (refs into active())
     std::vector<EntRef> sel;
     bool isSelected(const EntRef& r) const { return selSet_.count(r) > 0; }
+    uint64_t selRev = 1;   // changes whenever the selection does (render caches key on it)
     void setSelection(const std::vector<EntRef>& s);
     void addToSelection(const std::vector<EntRef>& s);
     void toggleSelection(const std::vector<EntRef>& s);
@@ -94,7 +97,37 @@ signals:
     void undoStateChanged();
 
 private:
-    std::set<EntRef> selSet_;
+    // Membership flags per entity kind: O(1) insert/lookup even for 100,000+ selected entities.
+    class SelSet {
+    public:
+        bool insert(const EntRef& r) {
+            auto& v = flags_[(int)r.kind];
+            if (r.id < 0) return false;
+            if ((size_t)r.id >= v.size()) v.resize(std::max<size_t>(r.id + 1, v.size() * 2), 0);
+            if (v[r.id]) return false;
+            v[r.id] = 1;
+            ++n_;
+            return true;
+        }
+        size_t count(const EntRef& r) const {
+            const auto& v = flags_[(int)r.kind];
+            return r.id >= 0 && (size_t)r.id < v.size() && v[r.id] ? 1 : 0;
+        }
+        void erase(const EntRef& r) {
+            auto& v = flags_[(int)r.kind];
+            if (r.id >= 0 && (size_t)r.id < v.size() && v[r.id]) { v[r.id] = 0; --n_; }
+        }
+        void clear() {
+            if (!n_) return;
+            for (auto& v : flags_) std::fill(v.begin(), v.end(), 0);
+            n_ = 0;
+        }
+        size_t size() const { return n_; }
+    private:
+        std::vector<uint8_t> flags_[16];
+        size_t n_ = 0;
+    };
+    SelSet selSet_;
     // In-memory snapshots share unchanged Entities between undo steps (copy-on-change by revision).
     struct Snapshot {
         Model meta;
@@ -106,7 +139,7 @@ private:
     std::shared_ptr<Snapshot> opSnapshot_;
     std::pair<uint64_t, std::shared_ptr<const Entities>> rootCache_;
     std::vector<std::pair<uint64_t, std::shared_ptr<const Entities>>> defCache_;
-    std::shared_ptr<Snapshot> takeSnapshot();
+    std::shared_ptr<Snapshot> takeSnapshot(bool steal = false);
     QString opName_;
     bool opActive_ = false;
     void restore(const UndoEntry& e);

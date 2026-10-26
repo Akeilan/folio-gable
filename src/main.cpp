@@ -22,7 +22,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName("Folio Gable");
     QApplication::setOrganizationName("Folio");
-    QApplication::setApplicationVersion("2.1.0");
+    QApplication::setApplicationVersion("2.2.0");
     QApplication::setDesktopFileName("folio-gable");
     // Carry settings and the crash-recovery file over from the pre-suite "Gable" name.
     {
@@ -47,6 +47,10 @@ int main(int argc, char** argv) {
     QStringList args = app.arguments();
     if (args.contains("--audit")) {
         QTimer::singleShot(400, &w, [&w] { QCoreApplication::exit(gable::runAudit(&w) ? 1 : 0); });
+        return app.exec();
+    }
+    if (args.contains("--bench") || args.contains("--bench-check")) {
+        QTimer::singleShot(400, &w, [&w] { QCoreApplication::exit(gable::runBench(&w)); });
         return app.exec();
     }
     if (args.size() > 1) w.openFile(args[1]);

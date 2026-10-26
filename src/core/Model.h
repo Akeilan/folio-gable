@@ -135,6 +135,19 @@ public:
 
     void touch() { rev = nextRevision(); }
 
+    // Hint for renderers: the change from revision movedBaseRev to movedRev only moved these
+    // vertices (and refreshed the planes of faces touching them). Set by previews that drag
+    // geometry around, so a frame can update just what moved.
+    std::vector<int> movedVerts;
+    uint64_t movedBaseRev = 0, movedRev = 0;
+    void touchMoved(const std::vector<int>& verts) {
+        uint64_t base = rev;
+        touch();
+        movedVerts = verts;
+        movedBaseRev = base;
+        movedRev = rev;
+    }
+
     // --- low level ---
     int addVertex(const Vec3& p);
     int findVertex(const Vec3& p, double tol = kTol) const;
@@ -163,10 +176,17 @@ public:
     bool empty() const;
     int aliveCount(EntKind k) const;
 
+    // Bounds of this Entities' own vertices (cached by revision), point guides and dimensions;
+    // instances are not included.
+    BBox ownBBox() const;
+
     // Rebuild the spatial hash (call after bulk vertex moves).
     void invalidateIndex() const { indexDirty_ = true; }
 
 private:
+    mutable BBox ownBox_;
+    mutable uint64_t ownBoxRev_ = 0;
+    mutable size_t ownBoxN_ = 0;
     mutable std::unordered_map<int64_t, std::vector<int>> grid_;
     mutable bool indexDirty_ = true;
     void ensureIndex() const;

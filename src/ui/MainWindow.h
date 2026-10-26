@@ -27,10 +27,12 @@ class FramelessResizer;
 
 class MainWindow;
 int runAudit(MainWindow* w);   // folio-gable --audit
+int runBench(MainWindow* w);   // folio-gable --bench
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
     friend class Auditor;
+    friend class Bencher;
 public:
     MainWindow();
     ~MainWindow() override;

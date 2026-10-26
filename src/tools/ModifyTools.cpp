@@ -231,7 +231,7 @@ void TransformTool::applyPreview(const Mat4& worldXf) {
             Vec3 n = geom::newellNormal(E, F.outer);
             if (!n.isZero()) F.plane = Plane(n, E.verts[F.outer[0]].p);
         }
-        E.touch();
+        E.touchMoved(verts_);
     }
     for (auto& [i, xf] : origInst_) E.insts[i].xf = L * xf;
 }
@@ -253,7 +253,7 @@ void TransformTool::endPreview() {
             Vec3 n = geom::newellNormal(E, F.outer);
             if (!n.isZero()) F.plane = Plane(n, E.verts[F.outer[0]].p);
         }
-        E.touch();
+        E.touchMoved(verts_);
     }
     for (auto& [i, xf] : origInst_)
         if (i < (int)E.insts.size()) E.insts[i].xf = xf;
