@@ -211,6 +211,8 @@ void Picker::walk(int def, const Entities& E, const Mat4& xf, const InstPath& pa
                 else { stack.push_back(n.first); stack.push_back(n.right); }
             }
         }
+        // visit candidates in index order, exactly as a full scan would (ties resolve the same way)
+        std::sort(cand.begin(), cand.end());
         const int nCand = ix ? (int)cand.size() : (int)E.faces.size();
         for (int ci = 0; ci < nCand; ++ci) {
             const int i = ix ? cand[ci] : ci;
@@ -263,6 +265,7 @@ void Picker::walk(int def, const Entities& E, const Mat4& xf, const InstPath& pa
             else { stack.push_back(n.first); stack.push_back(n.right); }
         }
     }
+    std::sort(cand.begin(), cand.end());
     const int nEdges = ix ? (int)cand.size() : (int)E.edges.size();
     for (int ci = 0; ci < nEdges; ++ci) {
         const int i = ix ? cand[ci] : ci;

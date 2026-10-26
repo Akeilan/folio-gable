@@ -176,7 +176,13 @@ private:
                 Picker::DeepResult b = v->picker.deep(x, y);
                 Picker::indexMin = keep;
                 auto same = [](const PickHit& p, const PickHit& q) { return p.kind == q.kind && p.id == q.id && p.path == q.path; };
-                if (!same(a.face, b.face) || !same(a.edge, b.edge) || !same(a.vertex, b.vertex) || a.edges.size() != b.edges.size()) ++differ;
+                if (!same(a.face, b.face) || !same(a.edge, b.edge) || !same(a.vertex, b.vertex) || a.edges.size() != b.edges.size()) {
+                    ++differ;
+                    if (qEnvironmentVariableIsSet("BENCH_VERBOSE"))
+                        std::printf("   differ at %.0f,%.0f: face %d/%d edge %d/%d (%.2f/%.2f px) vertex %d/%d edges %zu/%zu verts %zu/%zu\n", x, y,
+                                    a.face.id, b.face.id, a.edge.id, b.edge.id, a.edge.screenDist, b.edge.screenDist, a.vertex.id, b.vertex.id,
+                                    a.edges.size(), b.edges.size(), a.verts.size(), b.verts.size());
+                }
             }
             report(name, "picks that differ from a full scan", differ, 0.5, "");
         }
@@ -271,9 +277,10 @@ int Bencher::run() {
     w->resize(1280, 860);
     settle();
     std::printf("Folio Gable benchmark  (viewport %d x %d)\n", v->width(), v->height());
-    scene("terrain", &Bencher::terrain);
-    scene("boxes", &Bencher::boxes);
-    scene("instances", &Bencher::instances);
+    QString only = qEnvironmentVariable("BENCH_ONLY");
+    if (only.isEmpty() || only == "terrain") scene("terrain", &Bencher::terrain);
+    if (only.isEmpty() || only == "boxes") scene("boxes", &Bencher::boxes);
+    if (only.isEmpty() || only == "instances") scene("instances", &Bencher::instances);
     d->newModel();
     d->modified = false;
     std::printf("%d over budget\n", over);
