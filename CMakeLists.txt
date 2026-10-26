@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(Gable VERSION 2.4.0 LANGUAGES CXX)
+project(Gable VERSION 2.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Xml PrintSupport Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets OpenGL OpenGLWidgets Xml PrintSupport Svg DBus)
 find_package(OpenGL REQUIRED)
 
 add_library(gablecore STATIC
@@ -29,7 +29,8 @@ if(EXISTS ${CMAKE_SOURCE_DIR}/src/main.cpp)
 file(GLOB APP_SOURCES src/view/*.cpp src/tools/*.cpp src/ui/*.cpp)
 add_executable(gable src/main.cpp ${APP_SOURCES})
 set_target_properties(gable PROPERTIES OUTPUT_NAME folio-gable)
-target_link_libraries(gable PRIVATE gablecore Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::PrintSupport Qt6::Svg OpenGL::GL)
+target_link_libraries(gable PRIVATE gablecore Qt6::Widgets Qt6::OpenGL Qt6::OpenGLWidgets Qt6::PrintSupport Qt6::Svg Qt6::DBus OpenGL::GL)
+target_compile_definitions(gable PRIVATE GABLE_VERSION="${PROJECT_VERSION}")
 file(GLOB RIBBON_ICONS RELATIVE ${CMAKE_SOURCE_DIR}/resources/ribbon ${CMAKE_SOURCE_DIR}/resources/ribbon/*.svg)
 list(TRANSFORM RIBBON_ICONS PREPEND resources/ribbon/)
 qt_add_resources(gable "ribbon" PREFIX "/ribbon" BASE resources/ribbon FILES ${RIBBON_ICONS})

@@ -11,6 +11,8 @@
 #include "core/Dynamic.h"
 #include "ui/DynamicDialogs.h"
 #include "ui/Backstage.h"
+#include "ui/Theme.h"
+#include <QDBusVariant>
 #include "ui/MainWindow.h"
 #include "ui/Panels.h"
 #include "ui/Ribbon.h"
@@ -1533,6 +1535,74 @@ private:
         reset();
     }
 
+    static int lum(QRgb c) { return (qRed(c) * 299 + qGreen(c) * 587 + qBlue(c) * 114) / 1000; }
+    QRgb sample(QWidget* wd, double fx, double fy) {
+        QImage img = w->grab().toImage();
+        QPoint p = wd->mapTo(w, QPoint(int(wd->width() * fx), int(wd->height() * fy)));
+        p *= img.devicePixelRatio();
+        return img.pixel(std::clamp(p.x(), 0, img.width() - 1), std::clamp(p.y(), 0, img.height() - 1));
+    }
+
+    void sDarkMode() {
+        begin("dark mode follows the desktop");
+        reset();
+        box(1500, 1000, 800);
+        bool was = theme::isDark();
+        theme::setDark(false);
+        settle(50);
+        QWidget* body = w->findChild<QWidget*>("folioRibbonBody");
+        QWidget* sb = w->statusBar();
+        check(body && lum(sample(body, 0.995, 0.5)) > 200, "light: the ribbon is light");
+        QRgb viewLight = sample(v, 0.02, 0.98);
+        QToolButton* btn = nullptr;
+        for (auto* b : body ? body->findChildren<QToolButton*>() : QList<QToolButton*>())
+            if (b->isVisible() && !b->icon().isNull() && b->property("ribbonBtn").toBool()) { btn = b; break; }
+        QImage iconLight = btn ? btn->icon().pixmap(32).toImage() : QImage();
+
+        theme::setDark(true);
+        settle(80);
+        check(theme::isDark(), "switched to dark");
+        check(lum(sample(body, 0.995, 0.5)) < 70, QString("dark: the ribbon is dark (%1)").arg(lum(sample(body, 0.995, 0.5))));
+        check(lum(sample(sb, 0.6, 0.5)) < 70, "dark: the status bar is dark");
+        check(sample(v, 0.02, 0.98) == viewLight, "the model keeps its own colours");
+        QImage iconDark = btn ? btn->icon().pixmap(32).toImage() : QImage();
+        check(btn && !iconLight.isNull() && iconDark != iconLight, "ribbon icons are drawn again for dark");
+        check(qApp->palette().color(QPalette::Base).lightness() < 60, "text boxes and lists are dark");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) w->grab().save(QDir::tempPath() + "/gable-dark.png");
+        w->showBackstage("home");
+        settle(80);
+        QWidget* bs = w->backstage_;
+        check(bs && lum(sample(bs, 0.95, 0.95)) < 70, "dark: the File view is dark");
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) w->grab().save(QDir::tempPath() + "/gable-dark-file.png");
+        w->backstage_->close();
+        settle();
+        theme::setDark(false);
+        settle(50);
+        check(lum(sample(body, 0.995, 0.5)) > 200 && btn && btn->icon().pixmap(32).toImage() == iconLight, "and back to light");
+
+        // what the desktop says
+        qputenv("FOLIO_THEME", "dark");
+        check(theme::systemPrefersDark(), "FOLIO_THEME=dark is read as dark");
+        qputenv("FOLIO_THEME", "light");
+        check(!theme::systemPrefersDark(), "FOLIO_THEME=light is read as light");
+        qunsetenv("FOLIO_THEME");
+        QObject* fol = nullptr;
+        for (QObject* o : qApp->children()) if (QString(o->metaObject()->className()).endsWith("Follower")) fol = o;
+        check(fol != nullptr, "follows the desktop's settings portal");
+        if (fol) {
+            QMetaObject::invokeMethod(fol, "changed", Q_ARG(QString, "org.freedesktop.appearance"), Q_ARG(QString, "color-scheme"),
+                                      Q_ARG(QDBusVariant, QDBusVariant(QVariant(1u))));
+            settle(30);
+            check(theme::isDark(), "the desktop switching to dark is picked up while running");
+            QMetaObject::invokeMethod(fol, "changed", Q_ARG(QString, "org.freedesktop.appearance"), Q_ARG(QString, "color-scheme"),
+                                      Q_ARG(QDBusVariant, QDBusVariant(QVariant(2u))));
+            settle(30);
+            check(!theme::isDark(), "and back to light");
+        }
+        theme::setDark(was);
+        settle();
+    }
+
     void sCopyView() {
         begin("copy view as picture");
         reset();
@@ -1988,7 +2058,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}, {"dark", [this] { sDarkMode(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -2023,6 +2093,7 @@ int Auditor::run() {
     sSolidInspector();
     sCopyView();
     sDynamic();
+    sDarkMode();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();

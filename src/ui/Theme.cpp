@@ -1,4 +1,13 @@
 #include "ui/Theme.h"
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusReply>
+#include <QDBusVariant>
+#include <QIconEngine>
+#include <QProcess>
+#include <QRegularExpression>
+#include <QStyle>
+#include <QWidget>
 #include <QApplication>
 #include <QFile>
 #include <QFont>
@@ -13,6 +22,47 @@ namespace gable {
 namespace theme {
 
 static QString hex(const QColor& c) { return c.name(QColor::HexRgb); }
+
+// Dark mode: the chrome goes dark (like Office's Black theme); the model keeps its own colours.
+static QString darkSheet() {
+    return R"QSS(
+QToolTip { background: #2b2b2b; color: #f0f0f0; border: 1px solid #555555; }
+QToolButton[ribbonBtn="true"]:disabled { color: #6e6e6e; }
+QFrame#ribbonPopup { border-color: #555555; }
+QLabel[keytip="true"] { background: #f0f0f0; color: #1f1f1f; border-color: #ffffff; }
+#folioBackstage { background: #1f1f1f; }
+#bsBody, #bsBody > QWidget, QScrollArea#bsScroll, QScrollArea#bsScroll > QWidget > QWidget { background: #1f1f1f; }
+QLabel[bsTitle="true"], QLabel[bsSub="true"], QLabel[bsCard="true"] { color: #f0f0f0; }
+QLabel[dim="true"] { color: #a0a0a0; }
+QToolButton[bsTile="true"], QToolButton[bsPlace="true"] { color: #f0f0f0; }
+QPushButton[bsButton="true"] { background: #2b2b2b; border-color: #555555; color: #f0f0f0; }
+QTreeWidget#bsRecent { background: #1f1f1f; color: #f0f0f0; }
+QTreeWidget#bsRecent::item:selected { color: #ffffff; }
+QStatusBar, QStatusBar QLabel { color: #d0d0d0; }
+QStatusBar QLineEdit { background: #1f1f1f; color: #f0f0f0; border-color: #4a4a4a; }
+QTabBar#sceneTabs { background: #2b2b2b; }
+QTabBar#sceneTabs::tab { color: #e0e0e0; border-right-color: #404040; }
+QTabBar#sceneTabs::tab:hover { background: #3a3a3a; }
+QTabBar#sceneTabs::tab:selected { background: #1f1f1f; }
+QDockWidget { color: #f0f0f0; }
+QDockWidget::title { background: #252525; }
+#trayPane, #trayBody, #trayBody QWidget { background: #252525; color: #f0f0f0; }
+#trayBody QLineEdit, #trayBody QComboBox, #trayBody QSpinBox, #trayBody QDoubleSpinBox { background: #1f1f1f; color: #f0f0f0; }
+QToolButton[paneHeader="true"] { background: #252525; border-bottom-color: #333333; color: #f0f0f0; }
+QMenu { background: #2b2b2b; border-color: #555555; }
+QMenu::item { color: #f0f0f0; }
+QMenu::item:selected { color: #ffffff; }
+QMenu::item:disabled { color: #6e6e6e; }
+QMenu::separator { background: #404040; }
+QDialog { background: #2b2b2b; color: #f0f0f0; }
+QDialog QPushButton { background: #333333; border-color: #555555; color: #f0f0f0; }
+QDialog QTabWidget::pane { border-color: #404040; background: #2b2b2b; }
+QSlider::handle:horizontal { background: #d0d0d0; border-color: #777777; }
+QSlider::groove:horizontal { background: #4a4a4a; }
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal { background: #555555; }
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover { background: #6e6e6e; }
+)QSS";
+}
 
 static QString styleSheet() {
     QString s = R"QSS(
@@ -39,7 +89,7 @@ QLineEdit#folioSearch:focus { background: #ffffff; color: #222222; }
 #folioTabs QToolButton { background: transparent; border: none; border-bottom: 3px solid transparent;
   color: @ribbon_fg; padding: 6px 10px 4px 10px; font-size: 9.5pt; }
 #folioTabs QToolButton:hover { background: @hover_bg; }
-#folioTabs QToolButton[active="true"] { border-bottom: 3px solid @accent; color: @accent; font-weight: bold; }
+#folioTabs QToolButton[active="true"] { border-bottom: 3px solid @accent_line; color: @accent_text; font-weight: bold; }
 #folioTabs QToolButton[contextual="true"] { color: #8a4a00; }
 #folioTabs QToolButton#ribbonOptions { border: none; padding: 2px 6px; }
 
@@ -106,7 +156,7 @@ QTabBar#sceneTabs { background: #f3f3f3; }
 QTabBar#sceneTabs::tab { background: transparent; border: none; border-right: 1px solid #d0d0d0; padding: 3px 14px;
   color: #333333; min-height: 18px; }
 QTabBar#sceneTabs::tab:hover { background: #e6e6e6; }
-QTabBar#sceneTabs::tab:selected { background: #ffffff; color: @accent_dark; font-weight: bold; border-bottom: 2px solid @accent; }
+QTabBar#sceneTabs::tab:selected { background: #ffffff; color: @accent_text; font-weight: bold; border-bottom: 2px solid @accent_line; }
 
 /* task pane (tray) */
 QDockWidget { titlebar-close-icon: none; color: #262626; }
@@ -116,7 +166,7 @@ QDockWidget::title { background: #ffffff; padding: 6px 8px; border-left: 1px sol
 QToolButton[paneHeader="true"] { background: #ffffff; border: none; border-bottom: 1px solid #ececec; text-align: left;
   padding: 5px 4px; font-weight: 600; color: #262626; }
 QToolButton[paneHeader="true"]:hover { background: @tint; }
-QToolButton[paneHeader="true"]:checked { color: @accent_dark; }
+QToolButton[paneHeader="true"]:checked { color: @accent_text; }
 
 /* menus, dialogs, controls */
 QMenu { background: #ffffff; border: 1px solid #c6c6c6; padding: 3px 0; }
@@ -132,7 +182,7 @@ QPushButton:default { background: @accent; color: #ffffff; border: 1px solid @ac
 QPushButton:default:hover { background: @accent_dark; }
 QDialog QTabWidget::pane { border: 1px solid #d6d6d6; background: #f3f3f3; }
 QDialog QTabBar::tab { padding: 4px 12px; background: transparent; border: none; }
-QDialog QTabBar::tab:selected { border-bottom: 2px solid @accent; color: @accent_dark; }
+QDialog QTabBar::tab:selected { border-bottom: 2px solid @accent_line; color: @accent_text; }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: @accent; }
 QCheckBox::indicator:checked, QRadioButton::indicator:checked { }
 QSlider::sub-page:horizontal { background: @accent; border-radius: 2px; }
@@ -146,6 +196,9 @@ QScrollBar::handle:horizontal { background: #c6c6c6; border-radius: 4px; min-wid
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 )QSS";
+    if (isDark()) s += darkSheet();
+    s.replace("@accent_text", isDark() ? "#c4a6f0" : hex(accentDark()));
+    s.replace("@accent_line", isDark() ? "#9b74d6" : hex(accent()));
     s.replace("@accent_dark", hex(accentDark()));
     s.replace("@accent", hex(accent()));
     s.replace("@checked_bg", hex(checkedBg()));
@@ -160,20 +213,141 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
     return s;
 }
 
+// ------------------------------------------------------------------ light or dark
+
+static int gDark = -1;   // -1 not decided yet
+static QPalette gLightPalette;
+static bool gHaveLight = false;
+
+static int portalScheme() {
+    // org.freedesktop.portal.Settings.Read("org.freedesktop.appearance", "color-scheme"):
+    // 1 prefer dark, 2 prefer light, 0 no preference; -1 when there is no portal
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) return -1;
+    QDBusInterface iface("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                         "org.freedesktop.portal.Settings", bus);
+    if (!iface.isValid()) return -1;
+    iface.setTimeout(400);
+    QDBusMessage r = iface.call("Read", "org.freedesktop.appearance", "color-scheme");
+    if (r.type() != QDBusMessage::ReplyMessage || r.arguments().isEmpty()) return -1;
+    QVariant v = r.arguments().first();
+    while (v.canConvert<QDBusVariant>()) v = v.value<QDBusVariant>().variant();
+    bool ok = false;
+    int n = v.toInt(&ok);
+    return ok ? n : -1;
+}
+
+static int gnomeScheme() {
+    QProcess p;
+    p.start("gsettings", {"get", "org.gnome.desktop.interface", "color-scheme"});
+    if (p.waitForFinished(600) && p.exitCode() == 0) {
+        QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+        if (out.contains("prefer-dark")) return 1;
+        if (out.contains("prefer-light")) return 0;
+    }
+    QProcess t;
+    t.start("gsettings", {"get", "org.gnome.desktop.interface", "gtk-theme"});
+    if (t.waitForFinished(600) && t.exitCode() == 0) {
+        QString out = QString::fromUtf8(t.readAllStandardOutput()).trimmed().toLower();
+        if (!out.isEmpty()) return out.contains("dark") ? 1 : 0;
+    }
+    return -1;
+}
+
+bool systemPrefersDark() {
+    QString env = qEnvironmentVariable("FOLIO_THEME").trimmed().toLower();
+    if (env == "dark" || env == "black") return true;
+    if (env == "light" || env == "colorful" || env == "white") return false;
+    int p = portalScheme();
+    if (p == 1 || p == 2) return p == 1;
+    int g = gnomeScheme();
+    if (g >= 0) return g == 1;
+    return false;
+}
+
+bool isDark() {
+    if (gDark < 0) gDark = systemPrefersDark() ? 1 : 0;
+    return gDark == 1;
+}
+
+static QPalette darkPalette() {
+    QPalette p;
+    QColor win(0x2b, 0x2b, 0x2b), base(0x1f, 0x1f, 0x1f), text(0xf0, 0xf0, 0xf0), btn(0x33, 0x33, 0x33);
+    p.setColor(QPalette::Window, win);
+    p.setColor(QPalette::WindowText, text);
+    p.setColor(QPalette::Base, base);
+    p.setColor(QPalette::AlternateBase, QColor(0x26, 0x26, 0x26));
+    p.setColor(QPalette::Text, text);
+    p.setColor(QPalette::Button, btn);
+    p.setColor(QPalette::ButtonText, text);
+    p.setColor(QPalette::BrightText, Qt::white);
+    p.setColor(QPalette::Light, QColor(0x4a, 0x4a, 0x4a));
+    p.setColor(QPalette::Midlight, QColor(0x3d, 0x3d, 0x3d));
+    p.setColor(QPalette::Mid, QColor(0x8a, 0x8a, 0x8a));
+    p.setColor(QPalette::Dark, QColor(0x18, 0x18, 0x18));
+    p.setColor(QPalette::Shadow, Qt::black);
+    p.setColor(QPalette::PlaceholderText, QColor(0x8a, 0x8a, 0x8a));
+    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+        p.setColor(QPalette::Disabled, role, QColor(0x6e, 0x6e, 0x6e));
+    p.setColor(QPalette::Disabled, QPalette::Base, QColor(0x26, 0x26, 0x26));
+    return p;
+}
+
+void restyle() {
+    auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
+    if (!app) return;
+    if (!gHaveLight) { gLightPalette = app->palette(); gHaveLight = true; }
+    QPalette p = isDark() ? darkPalette() : gLightPalette;
+    p.setColor(QPalette::Highlight, accent());
+    p.setColor(QPalette::HighlightedText, Qt::white);
+    p.setColor(QPalette::Link, isDark() ? QColor(0xc4, 0xa6, 0xf0) : accent());
+    p.setColor(QPalette::Window, ribbonBg());
+    p.setColor(QPalette::ToolTipBase, isDark() ? QColor(0x2b, 0x2b, 0x2b) : QColor(Qt::white));
+    p.setColor(QPalette::ToolTipText, ribbonFg());
+    app->setPalette(p);
+    app->setStyleSheet(styleSheet());
+    for (QWidget* w : QApplication::allWidgets()) w->update();
+}
+
+void setDark(bool dark) {
+    if (gDark == (dark ? 1 : 0)) return;
+    gDark = dark ? 1 : 0;
+    restyle();
+}
+
+// Follows the desktop: the settings portal's SettingChanged signal.
+class Follower : public QObject {
+    Q_OBJECT
+public:
+    explicit Follower(QObject* parent) : QObject(parent) {}
+    void start() {
+        if (!qEnvironmentVariableIsEmpty("FOLIO_THEME")) return;
+        QDBusConnection::sessionBus().connect("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
+                                              "org.freedesktop.portal.Settings", "SettingChanged", this,
+                                              SLOT(changed(QString, QString, QDBusVariant)));
+    }
+public slots:
+    void changed(const QString& ns, const QString& key, const QDBusVariant& v) {
+        if (ns != "org.freedesktop.appearance" || key != "color-scheme") return;
+        QVariant x = v.variant();
+        while (x.canConvert<QDBusVariant>()) x = x.value<QDBusVariant>().variant();
+        int n = x.toInt();
+        if (n == 1 || n == 2) setDark(n == 1);
+        else setDark(systemPrefersDark());
+    }
+};
+
 void install(QApplication& app) {
     QFont f = app.font();
     f.setFamilies({"Segoe UI", "Noto Sans", "Open Sans", "Ubuntu", "Cantarell", "DejaVu Sans"});
     f.setPointSizeF(9);
     app.setFont(f);
-    QPalette p = app.palette();
-    p.setColor(QPalette::Highlight, accent());
-    p.setColor(QPalette::HighlightedText, Qt::white);
-    p.setColor(QPalette::Link, accent());
-    p.setColor(QPalette::Window, ribbonBg());
-    p.setColor(QPalette::ToolTipBase, Qt::white);
-    p.setColor(QPalette::ToolTipText, ribbonFg());
-    app.setPalette(p);
-    app.setStyleSheet(styleSheet());
+    gLightPalette = app.palette();
+    gHaveLight = true;
+    isDark();
+    restyle();
+    auto* fol = new Follower(&app);
+    fol->start();
 }
 
 static QString pathFor(const QString& name, bool small) {
@@ -184,15 +358,51 @@ static QString pathFor(const QString& name, bool small) {
 
 bool hasIcon(const QString& name) { return QFile::exists(":/ribbon/" + name + ".svg"); }
 
+// Dark mode artwork: greys turn round (ink light, white bodies dark), the purple tints deepen.
+static QByteArray darkSvg(QByteArray svg) {
+    static const QRegularExpression hexRe("#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![0-9a-fA-F])");
+    static const QHash<QString, QString> accent = {
+        {"e6dcf3", "4a3a66"}, {"c9b4e6", "5d4785"}, {"7a4cc0", "a07ae0"}, {"4f2a85", "b89ae6"},
+    };
+    QString t = QString::fromUtf8(svg), out;
+    int last = 0;
+    auto it = hexRe.globalMatch(t);
+    while (it.hasNext()) {
+        auto m = it.next();
+        QString h = m.captured(1).toLower();
+        if (h.size() == 3) h = QString("%1%1%2%2%3%3").arg(h[0]).arg(h[1]).arg(h[2]);
+        QString rep = m.captured(0);
+        if (accent.contains(h)) rep = "#" + accent[h];
+        else {
+            int r = h.mid(0, 2).toInt(nullptr, 16), g = h.mid(2, 2).toInt(nullptr, 16), b = h.mid(4, 2).toInt(nullptr, 16);
+            if (std::max({r, g, b}) - std::min({r, g, b}) <= 6) {
+                int v = std::clamp(int(std::lround(263.6 - 0.806 * (r + g + b) / 3.0)), 0, 255);
+                rep = QColor(v, v, v).name();
+            }
+        }
+        out += t.mid(last, m.capturedStart() - last) + rep;
+        last = m.capturedEnd();
+    }
+    out += t.mid(last);
+    return out.toUtf8();
+}
+
 QPixmap pixmap(const QString& name, int px, qreal dpr, bool white) {
     static QHash<QString, QPixmap> cache;
-    QString key = QString("%1|%2|%3|%4").arg(name).arg(px).arg(dpr).arg(white);
+    bool dark = isDark() && !white;
+    QString key = QString("%1|%2|%3|%4|%5").arg(name).arg(px).arg(dpr).arg(white).arg(dark);
     auto it = cache.find(key);
     if (it != cache.end()) return *it;
     int dev = qRound(px * dpr);
     QImage img(dev, dev, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::transparent);
-    QSvgRenderer r(pathFor(name, px <= 20));
+    QByteArray svg;
+    {
+        QFile f(pathFor(name, px <= 20));
+        if (f.open(QIODevice::ReadOnly)) svg = f.readAll();
+    }
+    if (dark) svg = darkSvg(svg);
+    QSvgRenderer r(svg);
     if (r.isValid()) {
         QPainter p(&img);
         p.setRenderHint(QPainter::Antialiasing);
@@ -222,14 +432,56 @@ QPixmap pixmap(const QString& name, int px, qreal dpr, bool white) {
     return pm;
 }
 
-QIcon icon(const QString& name, bool large) {
-    QIcon ic;
-    for (int px : {16, 20, 24, 32, 48}) {
-        if (!large && px > 24) continue;
-        for (qreal dpr : {1.0, 2.0}) ic.addPixmap(pixmap(name, px, dpr));
+// An icon drawn from the artwork at paint time, so it follows light and dark without being set again.
+class ThemedIconEngine : public QIconEngine {
+public:
+    ThemedIconEngine(const QString& n, bool large) : name_(n), large_(large) {}
+    QIconEngine* clone() const override { return new ThemedIconEngine(name_, large_); }
+    void paint(QPainter* p, const QRect& rect, QIcon::Mode mode, QIcon::State state) override {
+        qreal dpr = p->device() ? p->device()->devicePixelRatioF() : 1.0;
+        p->drawPixmap(rect, pixmapAt(rect.size(), mode, state, dpr));
     }
-    return ic;
-}
+    QPixmap pixmap(const QSize& size, QIcon::Mode mode, QIcon::State state) override {
+        return pixmapAt(size, mode, state, 1.0);
+    }
+    QPixmap scaledPixmap(const QSize& size, QIcon::Mode mode, QIcon::State state, qreal scale) override {
+        QPixmap pm = pixmapAt(size, mode, state, scale);
+        return pm;
+    }
+    QSize actualSize(const QSize& size, QIcon::Mode, QIcon::State) override {
+        int s = std::min(size.width(), size.height());
+        return QSize(s, s);
+    }
+    QList<QSize> availableSizes(QIcon::Mode, QIcon::State) override {
+        QList<QSize> l;
+        for (int px : {16, 20, 24, 32, 48}) if (large_ || px <= 24) l << QSize(px, px);
+        return l;
+    }
+    QString key() const override { return "folio-themed"; }
+private:
+    QPixmap pixmapAt(const QSize& size, QIcon::Mode mode, QIcon::State, qreal dpr) {
+        int px = std::max(8, std::min(size.width(), size.height()));
+        QPixmap pm = theme::pixmap(name_, px, dpr);
+        if (mode != QIcon::Disabled) return pm;
+        // disabled: faded and without colour, as the style would make it
+        QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < img.height(); ++y) {
+            QRgb* row = reinterpret_cast<QRgb*>(img.scanLine(y));
+            for (int x = 0; x < img.width(); ++x) {
+                int g = qGray(row[x]);
+                g = isDark() ? g / 2 + 40 : 128 + g / 3;
+                row[x] = qRgba(g, g, g, qAlpha(row[x]) * 45 / 100);
+            }
+        }
+        QPixmap out = QPixmap::fromImage(img);
+        out.setDevicePixelRatio(dpr);
+        return out;
+    }
+    QString name_;
+    bool large_;
+};
+
+QIcon icon(const QString& name, bool large) { return QIcon(new ThemedIconEngine(name, large)); }
 
 QIcon whiteIcon(const QString& name, int px) {
     QIcon ic;
@@ -239,3 +491,5 @@ QIcon whiteIcon(const QString& name, int px) {
 
 }  // namespace theme
 }  // namespace gable
+
+#include "Theme.moc"
