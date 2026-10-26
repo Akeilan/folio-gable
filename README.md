@@ -6,12 +6,14 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.3.0_amd64.deb
+sudo apt install ./folio-gable_2.3.1_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
 
 ## What's new in 2.3
+
+- **Copy View as Picture** (Home › Clipboard, Ctrl+Shift+C, 2.3.1): the view goes to the clipboard as a picture, to paste into Folio Draw, Folio Sheets or other programs.
 
 - **Materials panel › Edit**: change a material's name, colour, opacity, texture picture (load, remove, save) and tile size right in the panel, with the picture's proportions kept unless unlocked; Reset takes the texture's average colour. Each change is one undo step (a slider drag included).
 - **Material collections**: ⋯ › Export materials in model / Save current material write a `.gmat` collection; Import collection adds it to the list beside Colors and Textures, and picking from it adds the material to the model.
