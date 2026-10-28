@@ -750,6 +750,8 @@ static void testMatchPhoto() {
     NEAR(out.eye.z, def.eyeHeight, 1e-6);
 }
 
+#include "import_tests.inc"
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -770,6 +772,7 @@ int main(int argc, char** argv) {
     testExport3D();
     testSolidRepair();
     testDynamic();
+    testImports();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

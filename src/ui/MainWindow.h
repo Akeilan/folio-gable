@@ -7,6 +7,7 @@
 #include <QDockWidget>
 #include <QTabBar>
 #include <QTimer>
+#include <QPointer>
 #include <map>
 #include <memory>
 
@@ -24,6 +25,7 @@ struct RibbonTab;
 class Backstage;
 class KeyTips;
 class FramelessResizer;
+class SheetsWindow;
 
 class MainWindow;
 int runAudit(MainWindow* w);   // folio-gable --audit
@@ -54,6 +56,7 @@ private:
     ScenesPanel* scenes_ = nullptr;
     StylesPanel* styles_ = nullptr;
     QTabBar* sceneTabs_;
+    QPointer<SheetsWindow> sheets_;
     QLabel* status_;
     QLabel* vcbLabel_;
     QLineEdit* vcb_;
@@ -117,6 +120,8 @@ private:
     void about();
     void solidOp(int op);
     void notAvailable(const QString& what);
+    void drawingSheets();                     // G2-03: the Drawing Sheets window
+    QString sendEmail(const QString& what);   // M-12: "model" or "picture"; returns the attached file
     void showDynamicDialog(bool attributes);
     class ComponentOptionsDialog* compOptions_ = nullptr;
     class ComponentAttributesDialog* compAttrs_ = nullptr;

@@ -11,6 +11,12 @@
 #include "core/Dynamic.h"
 #include "ui/DynamicDialogs.h"
 #include "ui/Backstage.h"
+#include "ui/SheetsWindow.h"
+#include <QFontInfo>
+#include <QFontMetrics>
+#include <QComboBox>
+#include <QPushButton>
+#include <QPainter>
 #include "ui/Theme.h"
 #include <QDBusVariant>
 #include "ui/MainWindow.h"
@@ -70,6 +76,7 @@ private:
     int popupIndex = -1, popupCount = 0;
     QString popupName;   // pick the popup entry with this text (overrides popupIndex)
     QStringList popupSeen;
+    std::function<void(QWidget*)> onModal;   // looks at each dialog once before it is closed
 
     // ---------------------------------------------------------------- plumbing
     void say(const QString& s) { std::printf("%s\n", qPrintable(s)); std::fflush(stdout); }
@@ -248,6 +255,7 @@ private:
             }
             QWidget* mw = QApplication::activeModalWidget();
             if (!mw) return;
+            if (onModal && !mw->property("auditLooked").toBool()) { mw->setProperty("auditLooked", true); onModal(mw); }
             if (auto* fd = qobject_cast<QFileDialog*>(mw)) { fd->reject(); return; }
             if (auto* mb = qobject_cast<QMessageBox*>(mw)) {
                 for (auto* b : mb->buttons())
@@ -1460,10 +1468,296 @@ private:
         check(d2.load(path, &e2) && d2.model.root.insts.size() >= 2 && dyn::find(d2.model.root.insts[0].attrs, "Spacing"), "attributes are saved and read back");
 
         // out of scope: the buttons stay and say so
-        for (const char* id : {"extensions", "rubyconsole", "sendtolayout"}) check(w->act_.count(id) == 1, QString("%1 is there").arg(id));
+        for (const char* id : {"extensions", "rubyconsole"}) check(w->act_.count(id) == 1, QString("%1 is there").arg(id));
         act("rubyconsole");
         settle(100);
         validate("dynamic");
+    }
+
+    // ---------------------------------------------------------------- G2-03 drawing sheets
+    static int inkCount(const QImage& img, QRgb bg) {
+        int n = 0;
+        for (int y = 0; y < img.height(); y += 2)
+            for (int x = 0; x < img.width(); x += 2) {
+                QRgb c = img.pixel(x, y);
+                if (std::abs(qRed(c) - qRed(bg)) + std::abs(qGreen(c) - qGreen(bg)) + std::abs(qBlue(c) - qBlue(bg)) > 40) ++n;
+            }
+        return n;
+    }
+    void sendMouse(QWidget* wd, QEvent::Type t, QPointF p, Qt::MouseButtons bs = Qt::LeftButton) {
+        QMouseEvent e(t, p, wd->mapToGlobal(p), t == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton,
+                      t == QEvent::MouseButtonRelease ? Qt::NoButton : bs, Qt::NoModifier);
+        QApplication::sendEvent(wd, &e);
+    }
+    void sSheets() {
+        begin("drawing sheets (Send to LayOut)");
+        reset();
+        box(2000, 1500, 1000);
+        // two scenes: a top view in parallel projection, and the 3D view
+        Scene top;
+        top.name = "Plan";
+        top.cam.target = Vec3(1000, 750, 0);
+        top.cam.eye = Vec3(1000, 750, 20000);
+        top.cam.up = Vec3(0, 1, 0);
+        top.cam.perspective = false;
+        top.cam.orthoHeight = 6000;
+        top.style = d->model.style;
+        for (auto& t : d->model.tags) top.tagVisible.push_back(t.visible);
+        Scene persp = top;
+        persp.name = "Perspective";
+        persp.cam = d->model.camera;
+        d->model.scenes = {top, persp};
+        d->notifyChanged();
+        settle(50);
+        act("sendtolayout");
+        settle(300);
+        SheetsWindow* sw = w->sheets_;
+        check(sw && sw->isVisible(), "Drawing Sheets opens");
+        if (!sw) return;
+        check(d->model.sheets.size() == 1 && d->model.sheets[0].paper == "A3" && d->model.sheets[0].landscape, "a first A3 landscape sheet");
+        // a view: drag a rectangle with the Add View tool
+        auto* canvas = sw->canvas();
+        auto* ns = sw->findChild<QComboBox*>("sheetNewScene");
+        check(ns && ns->count() == 3, "new views can show the view as it is or either scene");
+        if (ns) ns->setCurrentIndex(ns->findData(0));
+        sw->findChild<QAction*>("sheetAddView")->trigger();
+        sendMouse(canvas, QEvent::MouseButtonPress, canvas->toPx(QPointF(20, 20)));
+        sendMouse(canvas, QEvent::MouseMove, canvas->toPx(QPointF(150, 100)));
+        sendMouse(canvas, QEvent::MouseButtonRelease, canvas->toPx(QPointF(220, 170)));
+        settle(200);
+        Sheet& s = d->model.sheets[0];
+        check(s.viewports.size() == 1 && s.viewports[0].scene == 0, "a view of the Plan scene is placed");
+        if (s.viewports.empty()) return;
+        check(std::fabs(s.viewports[0].rect.width() - 200) < 1 && std::fabs(s.viewports[0].rect.height() - 150) < 1, "where it was dragged");
+        // its scale
+        auto* scale = sw->findChild<QComboBox*>("viewScale");
+        check(scale && sw->sel.kind == SheetSel::View, "the new view is selected and its scale can be set");
+        if (!scale) return;
+        scale->setCurrentIndex(scale->findData(50.0));
+        settle(100);
+        check(s.viewports[0].scale == 50, "1:50");
+        QImage at50 = sw->viewImage(0, 0, QSize(400, 300), false);
+        scale->setCurrentIndex(scale->findData(25.0));
+        settle(100);
+        QImage at25 = sw->viewImage(0, 0, QSize(400, 300), false);
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { at50.save(QDir::tempPath() + "/gable-vp50.png"); at25.save(QDir::tempPath() + "/gable-vp25.png"); }
+        // the box's black outline: twice as long at 1:25 as at 1:50
+        auto outline = [](const QImage& im) { int n = 0; for (int y = 0; y < im.height(); ++y) for (int x = 0; x < im.width(); ++x) if (lum(im.pixel(x, y)) < 60) ++n; return n; };
+        double r = outline(at25) / std::max(1.0, (double)outline(at50));
+        check(r > 1.7 && r < 2.3, QString("at 1:25 the box is drawn twice the size it is at 1:50 (%1)").arg(r, 0, 'f', 2));
+        check(d->model.camera.perspective, "drawing a view leaves the model's own camera alone");
+        scale->setCurrentIndex(scale->findData(50.0));
+        settle(50);
+        // a dimension inside the view: at 1:50, 40 mm of paper is 2000 mm of model
+        sw->findChild<QAction*>("sheetAddDim")->trigger();
+        for (QPointF p : {QPointF(50, 60), QPointF(90, 60), QPointF(90, 52)}) {
+            sendMouse(canvas, QEvent::MouseButtonPress, canvas->toPx(p));
+            sendMouse(canvas, QEvent::MouseButtonRelease, canvas->toPx(p));
+        }
+        settle(100);
+        check(s.dims.size() == 1 && s.dims[0].viewport == 0, "a dimension in the view");
+        if (!s.dims.empty()) {
+            QString t = dimensionText(s, s.dims[0], d->model);
+            check(t.remove(' ').remove(',').contains("2000"), "it measures the model at the view's scale: " + dimensionText(s, s.dims[0], d->model));
+            check(std::fabs(std::fabs(s.dims[0].offset) - 8) < 1, "its line where it was put");
+        }
+        // a label with a leader, the title block
+        sw->edit("Add Label", [](Sheet& sh) { SheetLabel l; l.text = "Garden shed"; l.leader = true; l.target = QPointF(80, 80); l.at = QPointF(230, 40); sh.labels.push_back(l); });
+        auto* proj = sw->findChild<QLineEdit*>("titleProject");
+        proj->setText("Shed");
+        emit proj->editingFinished();
+        check(s.title.project == "Shed", "title block fields");
+        check(scaleText(s.viewports[0].scale) == "1:50", "the title block's scale comes from the view");
+        // selection and moving
+        sw->findChild<QAction*>("sheetSelect")->trigger();
+        QPointF in = canvas->toPx(QPointF(120, 140));
+        sendMouse(canvas, QEvent::MouseButtonPress, in);
+        sendMouse(canvas, QEvent::MouseMove, in + QPointF(30, 0), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, in + QPointF(30, 0));
+        settle(100);
+        check(s.viewports[0].rect.x() > 20.5, "a view drags to a new place");
+        d->undo();
+        settle(100);
+        check(std::fabs(d->model.sheets[0].viewports[0].rect.x() - 20) < 0.01, "and Undo puts it back");
+        // a second sheet, A4 portrait
+        sw->findChild<QPushButton*>("sheetAdd")->click();
+        settle(50);
+        check(d->model.sheets.size() == 2 && sw->current() == 1, "a second sheet");
+        auto* paper = sw->findChild<QComboBox*>("sheetPaper");
+        auto* orient = sw->findChild<QComboBox*>("sheetOrientation");
+        paper->setCurrentIndex(paper->findData("A4"));
+        orient->setCurrentIndex(1);
+        settle(50);
+        check(d->model.sheets[1].paper == "A4" && !d->model.sheets[1].landscape, "A4 portrait");
+        sw->setCurrent(0);
+        // the picture of the sheet
+        QImage pic(420 * 3, 297 * 3, QImage::Format_RGB32);
+        {
+            QPainter p(&pic);
+            paintSheet(p, d->model.sheets[0], d->model, 3, [&](int i, QSize px) { return sw->viewImage(0, i, px, false); });
+        }
+        if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { pic.save(QDir::tempPath() + "/gable-sheet.png"); sw->grab().save(QDir::tempPath() + "/gable-sheets-window.png"); }
+        QRect tb((420 - 10 - 170) * 3, (297 - 10 - 40) * 3, 170 * 3, 40 * 3);
+        check(inkCount(pic.copy(tb), qRgb(255, 255, 255)) > 200, "the title block is drawn");
+        check(inkCount(pic.copy(QRect(20 * 3, 20 * 3, 200 * 3, 150 * 3)), qRgb(255, 255, 255)) > 1000, "the view shows the model");
+        // PDF: one page per sheet, each its own size
+        QString pdf = QDir::tempPath() + "/gable-sheets-audit.pdf";
+        QFile::remove(pdf);
+        check(sw->exportPdf(pdf), "Save as PDF");
+        QFile f(pdf);
+        QByteArray data = f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        check(data.startsWith("%PDF"), "a PDF");
+        int pages = data.count("/Type /Page\n") + data.count("/Type /Page ") + data.count("/Type /Page/") + data.count("/Type/Page\n") + data.count("/Type/Page/") + data.count("/Type/Page ");
+        check(pages == 2 || data.count("/MediaBox") >= 2, QString("two pages (%1)").arg(pages));
+        // kept in the model file
+        QString path = QDir::tempPath() + "/gable-sheets-audit.gbl";
+        QString e2;
+        check(d->save(path, &e2), "save");
+        Document d2;
+        check(d2.load(path, &e2) && d2.model.sheets.size() == 2 && d2.model.sheets[0].viewports.size() == 1 &&
+              d2.model.sheets[0].viewports[0].scale == 50 && d2.model.sheets[0].dims.size() == 1 && d2.model.sheets[0].labels.size() == 1 &&
+              d2.model.sheets[0].title.project == "Shed", "the sheets are saved with the model");
+        sw->select({SheetSel::View, 0});
+        sw->deleteSelected();
+        check(d->model.sheets[0].viewports.empty() && d->model.sheets[0].dims[0].viewport == -1, "Delete removes a view; its dimension stays in paper mm");
+        sw->close();
+        d->modified = false;
+    }
+
+    // ---------------------------------------------------------------- M-12 send in email
+    void sEmail() {
+        begin("send in email");
+        reset();
+        box(1200, 800, 600);
+        QString dir = QDir::tempPath() + "/gable-fake-post";
+        QDir().mkpath(dir);
+        QString log = dir + "/log";
+        QFile::remove(log);
+        QFile sc(dir + "/folio-post");
+        if (sc.open(QIODevice::WriteOnly)) sc.write(QString("#!/bin/sh\necho \"$@\" >> %1\n").arg(log).toUtf8());
+        sc.close();
+        sc.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QByteArray oldPath = qgetenv("PATH");
+        qputenv("PATH", (dir + ":").toUtf8() + oldPath);
+        QString model = w->sendEmail("model");
+        QString pic = w->sendEmail("picture");
+        QElapsedTimer t;
+        t.start();
+        auto lines = [&] { QFile l(log); return l.open(QIODevice::ReadOnly) ? QString::fromUtf8(l.readAll()).split('\n', Qt::SkipEmptyParts) : QStringList(); };
+        while (lines().size() < 2 && t.elapsed() < 5000) settle(50);
+        QStringList ls = lines();
+        check(ls.size() == 2 && ls[0] == "--attach " + model && ls[1] == "--attach " + pic, "Folio Post opens a message with the file attached: " + ls.join(" | "));
+        Document d2;
+        QString e2;
+        check(!model.isEmpty() && d2.load(model, &e2) && d2.model.root.aliveCount(EntKind::Face) == 6, "the attachment is the model");
+        QImage img(pic);
+        check(!img.isNull() && img.width() > 100, "and the picture of the view");
+        check(w->act_.count("sendemail") && w->act_.count("sendpicture"), "both are commands (search finds them)");
+        qputenv("PATH", "/nonexistent");
+        check(w->sendEmail("picture").isEmpty(), "without a mail app it says what's needed");
+        qputenv("PATH", oldPath);
+        d->modified = false;
+    }
+
+    // ---------------------------------------------------------------- X2-01 desktop themes
+    static double contrast(QColor a, QColor b) {
+        auto l = [](QColor c) {
+            auto ch = [](double v) { v /= 255; return v <= 0.03928 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+            return 0.2126 * ch(c.red()) + 0.7152 * ch(c.green()) + 0.0722 * ch(c.blue());
+        };
+        double x = l(a), y = l(b);
+        if (x < y) std::swap(x, y);
+        return (x + 0.05) / (y + 0.05);
+    }
+    int themeProblems(QWidget* top, const QString& where, QWidget* within = nullptr) {
+        QImage img = top->grab().toImage();
+        int loud = 0, n = 0;
+        auto isLoud = [](QRgb c) {
+            auto nearc = [&](int r, int g, int b) { return std::abs(qRed(c) - r) < 26 && std::abs(qGreen(c) - g) < 26 && std::abs(qBlue(c) - b) < 26; };
+            return nearc(0x13, 0xd6, 0xc2) || nearc(0xff, 0x2f, 0xd0) || nearc(0xd6, 0xff, 0x13);
+        };
+        for (int y = 0; y < img.height(); y += 3)
+            for (int x = 0; x < img.width(); x += 3) { ++n; if (isLoud(img.pixel(x, y))) ++loud; }
+        int probs = 0;
+        if (loud * 1000 > n * 5) { check(false, QString("%1: %2% of it in the desktop theme's colours").arg(where).arg(100.0 * loud / n, 0, 'f', 1)); ++probs; }
+        for (QWidget* c : (within ? within : top)->findChildren<QWidget*>()) {
+            if (!c->isVisible() || c->width() < 4 || c->height() < 4) continue;
+            QString text;
+            if (auto* l = qobject_cast<QLabel*>(c)) text = l->text();
+            else if (auto* b = qobject_cast<QAbstractButton*>(c)) text = b->text();
+            else if (auto* e = qobject_cast<QLineEdit*>(c)) text = e->text();
+            if (text.trimmed().isEmpty() || text.startsWith('<')) continue;
+            QColor fg = c->palette().color(c->foregroundRole());
+            QColor bgc = c->palette().color(c->backgroundRole());
+            if (isLoud(fg.rgb()) || contrast(fg, bgc) < 3.0) {
+                // the palette says so: look at the pixels to be sure (style sheets may paint over it)
+                QImage wi = img.copy(QRect(c->mapTo(top, QPoint(0, 0)), c->size()));
+                QMap<QRgb, int> hist;
+                for (int y = 0; y < wi.height(); y += 2) for (int x = 0; x < wi.width(); x += 2) hist[wi.pixel(x, y) & 0xffffff]++;
+                QRgb back = 0; int best = -1;
+                for (auto it = hist.begin(); it != hist.end(); ++it) if (it.value() > best) { best = it.value(); back = it.key(); }
+                double most = 0;
+                bool pinkInk = false;
+                for (auto it = hist.begin(); it != hist.end(); ++it) {
+                    most = std::max(most, contrast(QColor(it.key()), QColor(back)));
+                    if (isLoud(it.key()) && it.value() > 3) pinkInk = true;
+                }
+                if (pinkInk || most < 3.0) {
+                    check(false, QString("%1: '%2' (%3) hard to read, contrast %4").arg(where, text.left(30), c->metaObject()->className()).arg(most, 0, 'f', 1));
+                    ++probs;
+                }
+            }
+        }
+        return probs;
+    }
+    // X2-04: the same text height on Ubuntu 22.04 and 24.04 (24.04's Carlito has Calibri's tall line metrics)
+    void sFonts() {
+        begin("chrome text height");
+        QFont f = qApp->font();
+        QFontMetrics fm(f);
+        QFontInfo fi(f);
+        say(QString("   chrome font: %1 %2 pt, line %3 px").arg(fi.family()).arg(f.pointSizeF()).arg(fm.height()));
+        check(fm.height() <= 15, QString("a line of 9 pt chrome text is at most 15 px (%1 px, %2)").arg(fm.height()).arg(fi.family()));
+        QWidget* body = w->findChild<QWidget*>("folioRibbonBody");
+        check(body && body->height() <= 110, QString("the ribbon keeps its height (%1 px)").arg(body ? body->height() : -1));
+    }
+
+    void sDesktopTheme() {
+        QString mode = qEnvironmentVariable("GABLE_DESKTOP_THEME");
+        begin("desktop theme " + mode + (theme::isDark() ? " (Gable dark)" : " (Gable light)"));
+        reset();
+        box(1500, 1000, 800);
+        QPalette pal = qApp->palette();
+        check(pal.color(QPalette::Window) != QColor(0x13, 0xd6, 0xc2) && pal.color(QPalette::Text) != QColor(0xff, 0x2f, 0xd0),
+              "Gable's palette is its own");
+        int looked = 0;
+        themeProblems(w, "the window");
+        ++looked;
+        for (const char* page : {"home", "new", "open", "info", "saveas", "print", "export"}) {
+            w->showBackstage(page);
+            settle(80);
+            themeProblems(w, QString("File › %1").arg(page), w->backstage_);
+            ++looked;
+        }
+        w->backstage_->close();
+        settle(50);
+        act("sendtolayout");
+        settle(200);
+        if (w->sheets_) { themeProblems(w->sheets_, "Drawing Sheets"); ++looked; w->sheets_->close(); }
+        // the dialogs, as the closer meets them
+        QStringList seen;
+        onModal = [&](QWidget* dlg) {
+            settle(60);
+            themeProblems(dlg, "dialog " + dlg->windowTitle());
+            seen << dlg->windowTitle();
+        };
+        for (const char* id : {"preferences", "modelinfo", "export2d", "shortcuts", "componentattributes"}) {
+            act(id);
+            settle(400);
+        }
+        onModal = nullptr;
+        check(looked + seen.size() >= 10, QString("%1 windows looked at").arg(looked + seen.size()));
+        d->modified = false;
     }
 
     void sSolidInspector() {
@@ -2049,6 +2343,18 @@ int Auditor::run() {
     QTimer closer;
     startModalCloser(closer);
     settle(300);
+    {
+        // File › Send in email starts the mail app: during the audit a stand-in that only notes the call
+        QString fake = QDir::tempPath() + "/gable-audit-bin";
+        QDir().mkpath(fake);
+        for (const char* app : {"folio-post", "xdg-email"}) {
+            QFile sc(fake + "/" + app);
+            if (sc.open(QIODevice::WriteOnly)) sc.write(QString("#!/bin/sh\necho \"$0 $@\" >> %1/calls\n").arg(fake).toUtf8());
+            sc.close();
+            sc.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        }
+        qputenv("PATH", (fake + ":").toUtf8() + qgetenv("PATH"));
+    }
     QString only = qEnvironmentVariable("AUDIT_ONLY");
     if (!only.isEmpty()) {
         std::map<QString, std::function<void()>> m = {
@@ -2058,7 +2364,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}, {"dark", [this] { sDarkMode(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}, {"dark", [this] { sDarkMode(); }}, {"sheets", [this] { sSheets(); }}, {"email", [this] { sEmail(); }}, {"desktoptheme", [this] { sDesktopTheme(); }}, {"fonts", [this] { sFonts(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -2094,6 +2400,10 @@ int Auditor::run() {
     sCopyView();
     sDynamic();
     sDarkMode();
+    sSheets();
+    sEmail();
+    sFonts();
+    if (qEnvironmentVariableIsSet("GABLE_DESKTOP_THEME")) sDesktopTheme();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();
         sContextMenus();

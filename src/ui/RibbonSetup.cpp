@@ -75,7 +75,9 @@ static const std::map<QString, QString>& descriptions() {
         {"componentattributes", "Give a component behaviour: attributes and formulas that size, place, copy and animate its parts."},
         {"extensions", "Not available: Folio Gable can't run SketchUp extensions."},
         {"rubyconsole", "Not available: Folio Gable can't run Ruby scripts."},
-        {"sendtolayout", "Not available: Folio Gable has no app for drawing sheets yet."},
+        {"sendtolayout", "Drawing sheets: put scenes on paper with dimensions, labels and a title block; print them or save a PDF."},
+        {"sendemail", "Send this model in a new email message, as an attachment."},
+        {"sendpicture", "Send a picture of the view in a new email message."},
         {"solidinspector", "Show why the selected group isn't a solid (holes, stray edges, reversed faces) and fix it."},
         {"export2d", "Save the current view as a PNG or JPEG image at any size."},
         {"print", "Print the current view."},
@@ -314,6 +316,8 @@ void MainWindow::buildChrome() {
     h.exportImage = [this] { exportImage(); };
     h.exportModel = [this](const QString& ext) { exportModel(ext); };
     h.notAvailable = [this](const QString& what) { notAvailable(what); };
+    h.drawingSheets = [this] { drawingSheets(); };
+    h.sendEmail = [this](const QString& what) { sendEmail(what); };
     h.options = [this] { preferences(); };
     h.modelInfo = [this] { modelInfo(); };
     h.purge = [this] {

@@ -44,6 +44,8 @@
 #include <QPrintDialog>
 #include <QPrinter>
 #include <QPdfWriter>
+#include <QProcess>
+#include "ui/SheetsWindow.h"
 #include <QPageSize>
 #include <QSettings>
 #include <QSpinBox>
@@ -479,7 +481,9 @@ void MainWindow::buildActions() {
     addAct("componentattributes", "Component Attributes", QKeySequence(), [this] { showDynamicDialog(true); }, "componentattributes");
     addAct("extensions", "Extension Manager", QKeySequence(), [this] { notAvailable("Extension Manager"); }, "extensions");
     addAct("rubyconsole", "Ruby Console", QKeySequence(), [this] { notAvailable("Ruby Console"); }, "rubyconsole");
-    addAct("sendtolayout", "Send to LayOut", QKeySequence(), [this] { notAvailable("Send to LayOut"); }, "sendtolayout");
+    addAct("sendtolayout", "Drawing Sheets…", QKeySequence(), [this] { drawingSheets(); }, "sendtolayout");
+    addAct("sendemail", "Send Model in Email…", QKeySequence(), [this] { sendEmail("model"); }, "export");
+    addAct("sendpicture", "Send Picture in Email…", QKeySequence(), [this] { sendEmail("picture"); }, "exportimage");
     addAct("solidinspector", "Solid Inspector", QKeySequence(), [this] { view_->setTool("solidinspect"); }, "solidinspector");
     addAct("solid_union", "Union", QKeySequence(), [this] { solidOp((int)SolidOp::Union); });
     addAct("solid_subtract", "Subtract", QKeySequence(), [this] { solidOp((int)SolidOp::Subtract); });
@@ -781,7 +785,7 @@ void MainWindow::open() {
     if (!maybeSave()) return;
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Open Model", s.value("lastDir", QDir::homePath()).toString(),
-                                              "Folio Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf);;All files (*)");
+                                              "Folio Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc);;All files (*)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     openFile(fn);
@@ -839,8 +843,9 @@ void MainWindow::refreshRecent() {
 void MainWindow::importFile() {
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir", QDir::homePath()).toString(),
-                                              "3D models and pictures (*.obj *.stl *.dae *.dxf *.gbl *.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;"
-                                              "Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;Folio Gable (*.gbl);;"
+                                              "3D models and pictures (*.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc *.gbl *.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;"
+                                              "Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;3D Studio (*.3ds);;Google Earth (*.kmz);;"
+                                              "IFC building model (*.ifc);;Folio Gable (*.gbl);;"
                                               "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -889,7 +894,9 @@ void MainWindow::importFile() {
     form->addRow("File units:", units);
     form->addRow("", swap);
     form->addRow("", merge);
-    if (ext == "dae" || ext == "gbl") { units->setEnabled(false); swap->setEnabled(false); }
+    // COLLADA, KMZ (COLLADA inside) and IFC say their own units; a Folio Gable model is in millimetres
+    if (ext == "dae" || ext == "gbl" || ext == "kmz" || ext == "ifc") { units->setEnabled(false); swap->setEnabled(false); }
+    if (ext == "3ds") units->setCurrentIndex(3);   // 3ds Max's default system unit is the inch
     auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     form->addRow(bb);
     connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -897,7 +904,7 @@ void MainWindow::importFile() {
     if (dlg.exec() != QDialog::Accepted) return;
     static const double f[] = {1, 10, 1000, 25.4, 304.8};
     ImportOptions io;
-    io.scale = ext == "dae" ? 1.0 : f[units->currentIndex()];
+    io.scale = (ext == "dae" || ext == "kmz" || ext == "ifc") ? 1.0 : f[units->currentIndex()];
     io.swapYZ = swap->isChecked();
     io.mergeCoplanar = merge->isChecked();
     QString err;
@@ -909,6 +916,9 @@ void MainWindow::importFile() {
     if (idx < 0) { QMessageBox::warning(this, "Import", err); return; }
     doc_->setSelection({{EntKind::Instance, idx}});
     view_->zoomSelection();
+    QStringList notes = gable::takeImportNotes();
+    if (materials_) materials_->refresh();
+    if (!notes.isEmpty()) QMessageBox::information(this, "Import", "Imported. " + notes.join("\n"));
 }
 
 void MainWindow::exportModel(const QString& forcedExt) {
@@ -2118,14 +2128,47 @@ void MainWindow::textureCommand(int what) {
 
 namespace gable {
 
+void MainWindow::drawingSheets() {
+    if (!sheets_) sheets_ = new SheetsWindow(doc_, view_, this);
+    sheets_->show();
+    sheets_->raise();
+    sheets_->activateWindow();
+}
+
+QString MainWindow::sendEmail(const QString& what) {
+    QString name = doc_->filePath.isEmpty() ? QString("Untitled") : QFileInfo(doc_->filePath).completeBaseName();
+    QString dir = QDir::tempPath() + "/folio-share-" + QString::number(QCoreApplication::applicationPid()) + "-" +
+                  QString::number(QDateTime::currentMSecsSinceEpoch());
+    QDir().mkpath(dir);
+    QString path;
+    if (what == "picture") {
+        path = dir + "/" + name + ".png";
+        double dpr = view_->devicePixelRatioF();
+        QImage img = view_->renderImage(std::max(1, (int)std::lround(view_->width() * dpr)), std::max(1, (int)std::lround(view_->height() * dpr)), false);
+        if (!img.save(path)) { QMessageBox::warning(this, "Send in Email", "Folio Gable couldn't make the picture."); return QString(); }
+    } else {
+        path = dir + "/" + name + ".gbl";
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly) || f.write(saveModel(doc_->model, true)) < 0) {
+            QMessageBox::warning(this, "Send in Email", "Folio Gable couldn't make the attachment.");
+            return QString();
+        }
+    }
+    QString post = QStandardPaths::findExecutable("folio-post");
+    if (!post.isEmpty()) QProcess::startDetached(post, {"--attach", path});
+    else if (!QStandardPaths::findExecutable("xdg-email").isEmpty())
+        QProcess::startDetached("xdg-email", {"--subject", name, "--attach", path});
+    else {
+        QMessageBox::information(this, "Send in Email", "Sending needs a mail app: install Folio Post.");
+        return QString();
+    }
+    statusBar()->showMessage("A new message with " + QFileInfo(path).fileName() + " attached is opening in your mail app.", 5000);
+    return path;
+}
+
 void MainWindow::notAvailable(const QString& what) {
-    QString why;
-    if (what == "Send to LayOut")
-        why = "Folio Gable doesn't have an app for drawing sheets yet. To use a view in a document, use Copy View "
-              "(Ctrl+Shift+C) or File › Export › Image or PDF.";
-    else
-        why = "Folio Gable can't run SketchUp extensions or Ruby scripts. Its own tools cover drawing, solids, "
-              "terrain and dynamic components.";
+    QString why = "Folio Gable can't run SketchUp extensions or Ruby scripts. Its own tools cover drawing, solids, "
+                  "terrain and dynamic components.";
     QMessageBox::information(this, what, QString("%1 isn't available in Folio Gable.\n\n%2").arg(what, why));
 }
 
