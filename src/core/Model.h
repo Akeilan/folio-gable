@@ -1,5 +1,6 @@
 // Folio Gable — model data structures.
 #pragma once
+#include "core/Sheets.h"
 #include "math/Vec.h"
 #include <QString>
 #include <QByteArray>
@@ -352,6 +353,7 @@ public:
     std::vector<ComponentDef> defs;
     Entities root;
     std::vector<Scene> scenes;
+    std::vector<Sheet> sheets;     // drawing sheets (paper layouts of scenes)
     Style style;
     ShadowSettings shadow;
     UnitSettings units;

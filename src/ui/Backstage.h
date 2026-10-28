@@ -26,6 +26,8 @@ struct BackstageHost {
     std::function<void(const QString&)> forgetRecent;
     std::function<void()> save, saveAs, importFile, print, exportImage, options, modelInfo, purge, closeModel;
     std::function<void(const QString&)> exportModel;
+    std::function<void()> drawingSheets;            // G2-03
+    std::function<void(const QString&)> sendEmail;   // "model" or "picture"
     std::function<void(const QString&)> notAvailable;   // a SketchUp command Folio Gable leaves out
     std::function<QString()> filePath;
     std::function<std::vector<std::pair<QString, QString>>()> properties;

@@ -7,7 +7,7 @@
 namespace gable {
 
 static const quint32 kMagic = 0x4742414C;  // "GBAL"
-static const quint32 kVersion = 7;   // 4: texture mappings carry the "projected" flag; 5: edge style settings; 6: matched photos; 7: dynamic components
+static const quint32 kVersion = 8;   // 8: drawing sheets; 4: texture mappings carry the "projected" flag; 5: edge style settings; 6: matched photos; 7: dynamic components
 static quint32 gReadVersion = kVersion;
 
 static QDataStream& operator<<(QDataStream& s, const Vec3& v) { return s << v.x << v.y << v.z; }
@@ -313,6 +313,7 @@ QByteArray saveModel(const Model& m, bool compress) {
                     for (auto& e : l) s << e.x << e.y;
             }
         }
+        s << sheetsToJson(m.sheets);
     }
     if (!compress) return raw;
     QByteArray out("GABLEZ1\n");
@@ -381,6 +382,11 @@ bool loadModel(Model& m, const QByteArray& dataIn, QString* error) {
                     for (auto& e : l) s >> e.x >> e.y;
             }
         }
+    }
+    if (version >= 8) {
+        QByteArray js;
+        s >> js;
+        nm.sheets = sheetsFromJson(js);
     }
     if (s.status() != QDataStream::Ok) {
         if (error) *error = "The file is truncated or damaged.";

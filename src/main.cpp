@@ -40,6 +40,23 @@ int main(int argc, char** argv) {
             QFile::rename(oldAuto, newDir + "/autosave.gbl");
         }
     }
+    // tests: start as if the desktop had a dark or loud colour theme (X2-01)
+    if (qEnvironmentVariable("GABLE_DESKTOP_THEME") == "colour") {
+        QPalette loud;
+        for (auto r : {QPalette::Window, QPalette::Base, QPalette::Button, QPalette::AlternateBase, QPalette::ToolTipBase})
+            loud.setColor(r, QColor(0x13, 0xd6, 0xc2));
+        for (auto r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText, QPalette::ToolTipText, QPalette::PlaceholderText})
+            loud.setColor(r, QColor(0xff, 0x2f, 0xd0));
+        loud.setColor(QPalette::Highlight, QColor(0xd6, 0xff, 0x13));
+        QApplication::setPalette(loud);
+    } else if (qEnvironmentVariable("GABLE_DESKTOP_THEME") == "dark") {
+        QPalette dk;
+        for (auto r : {QPalette::Window, QPalette::Base, QPalette::Button, QPalette::AlternateBase})
+            dk.setColor(r, QColor(0x24, 0x24, 0x24));
+        for (auto r : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+            dk.setColor(r, QColor(0xee, 0xee, 0xec));
+        QApplication::setPalette(dk);
+    }
     gable::theme::install(app);
     QApplication::setWindowIcon(QIcon(gable::appIconPixmap(256)));
     gable::MainWindow w;

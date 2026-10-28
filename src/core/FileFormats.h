@@ -24,7 +24,12 @@ struct ExportOptions {
 // the format requires, and 3MF for printing (one object per closed shell, millimetres).
 
 // Imports into a new group (definition) inside target; returns instance index or -1.
+// Formats: Folio Gable (.gbl), OBJ, STL, COLLADA (.dae), DXF, 3D Studio (.3ds), Google Earth (.kmz)
+// and IFC (.ifc, building parts as groups on a tag per IFC class).
 int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err);
+// What the last import couldn't bring in fully, for the user (e.g. IFC openings); cleared when read.
+QStringList takeImportNotes();
+
 bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, QString* err,
                 const std::vector<EntRef>* sel = nullptr);
 

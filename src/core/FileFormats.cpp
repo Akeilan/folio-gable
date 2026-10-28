@@ -1260,9 +1260,40 @@ static bool export3MF(const Model& m, const QString& path, QString* err, const s
 
 // ------------------------------------------------------------------ dispatch
 
+bool import3DS(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
+bool importIFC(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err, QStringList* notes);
+bool importKMZ(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
+
+static QStringList g_importNotes;
+QStringList takeImportNotes() {
+    QStringList n = g_importNotes;
+    g_importNotes.clear();
+    return n;
+}
+
+int importDAEInto(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
+    return importFile(m, target, path, opt, err);
+}
+
 int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
     QString ext = QFileInfo(path).suffix().toLower();
     QString name = QFileInfo(path).completeBaseName();
+    g_importNotes.clear();
+    if (ext == "3ds" || ext == "kmz" || ext == "ifc") {
+        // several groups (meshes, models, building parts) inside one group named after the file
+        int def = m.addDef(name, true);
+        Entities tmp;
+        bool ok = ext == "3ds" ? import3DS(m, tmp, path, opt, err)
+                : ext == "kmz" ? importKMZ(m, tmp, path, opt, err)
+                : importIFC(m, tmp, path, opt, err, &g_importNotes);
+        if (!ok) { m.defs[def].alive = false; return -1; }
+        m.defs[def].ents = std::move(tmp);
+        Instance in;
+        in.def = def;
+        target.insts.push_back(in);
+        target.touch();
+        return (int)target.insts.size() - 1;
+    }
     if (ext == "dae") {
         size_t before = target.insts.size();
         if (!importDAE(m, target, path, opt, err)) return -1;

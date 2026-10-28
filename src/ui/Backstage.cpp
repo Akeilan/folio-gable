@@ -428,8 +428,14 @@ QWidget* Backstage::pageExport() {
     v->addWidget(bigButton("exportimage", "Image or PDF", "The current view as PNG, JPEG or a PDF page, at any resolution.", host_.exportImage));
     v->addSpacing(8);
     v->addWidget(label("Drawing sheets", "bsCard"));
-    v->addWidget(bigButton("sendtolayout", "Send to LayOut", "Not available: Folio Gable has no app for drawing sheets yet.",
-                           [this] { if (host_.notAvailable) host_.notAvailable("Send to LayOut"); }));
+    v->addWidget(bigButton("sendtolayout", "Drawing sheets", "Scenes on paper with dimensions, labels and a title block, to print or save as PDF.",
+                           [this] { if (host_.drawingSheets) run(host_.drawingSheets); }));
+    v->addSpacing(8);
+    v->addWidget(label("Send in email", "bsCard"));
+    v->addWidget(bigButton("export", "Send the model", "A new message in your mail app with this model (.gbl) attached.",
+                           [this] { if (host_.sendEmail) run([this] { host_.sendEmail("model"); }); }));
+    v->addWidget(bigButton("exportimage", "Send a picture of the view", "A new message with the current view attached as a PNG picture.",
+                           [this] { if (host_.sendEmail) run([this] { host_.sendEmail("picture"); }); }));
     v->addStretch(1);
     return w;
 }

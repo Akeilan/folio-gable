@@ -14,6 +14,8 @@
 #include <QHash>
 #include <QPainter>
 #include <QPalette>
+#include <QStyleFactory>
+#include <QStyle>
 #include <QSvgRenderer>
 #include <algorithm>
 #include <cmath>
@@ -216,8 +218,6 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 // ------------------------------------------------------------------ light or dark
 
 static int gDark = -1;   // -1 not decided yet
-static QPalette gLightPalette;
-static bool gHaveLight = false;
 
 static int portalScheme() {
     // org.freedesktop.portal.Settings.Read("org.freedesktop.appearance", "color-scheme"):
@@ -270,6 +270,32 @@ bool isDark() {
     return gDark == 1;
 }
 
+// X2-01: light mode has its own palette too, not the desktop's: a dark or coloured desktop theme
+// (Qt style or palette set system-wide) never shows through Gable's windows and dialogs.
+static QPalette lightPalette() {
+    QPalette p;
+    QColor win(0xf3, 0xf3, 0xf3), text(0x26, 0x26, 0x26), base(Qt::white), btn(0xfd, 0xfd, 0xfd);
+    p.setColor(QPalette::Window, win);
+    p.setColor(QPalette::WindowText, text);
+    p.setColor(QPalette::Base, base);
+    p.setColor(QPalette::AlternateBase, QColor(0xf5, 0xf5, 0xf5));
+    p.setColor(QPalette::Text, text);
+    p.setColor(QPalette::Button, btn);
+    p.setColor(QPalette::ButtonText, text);
+    p.setColor(QPalette::BrightText, Qt::white);
+    p.setColor(QPalette::Light, Qt::white);
+    p.setColor(QPalette::Midlight, QColor(0xe3, 0xe3, 0xe3));
+    p.setColor(QPalette::Mid, QColor(0xa0, 0xa0, 0xa0));
+    p.setColor(QPalette::Dark, QColor(0x80, 0x80, 0x80));
+    p.setColor(QPalette::Shadow, QColor(0x40, 0x40, 0x40));
+    p.setColor(QPalette::PlaceholderText, QColor(0x80, 0x80, 0x80));
+    for (auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+        p.setColor(QPalette::Disabled, role, QColor(0xa0, 0xa0, 0xa0));
+    p.setColor(QPalette::Disabled, QPalette::Base, QColor(0xf3, 0xf3, 0xf3));
+    p.setColor(QPalette::Disabled, QPalette::Button, QColor(0xf3, 0xf3, 0xf3));
+    return p;
+}
+
 static QPalette darkPalette() {
     QPalette p;
     QColor win(0x2b, 0x2b, 0x2b), base(0x1f, 0x1f, 0x1f), text(0xf0, 0xf0, 0xf0), btn(0x33, 0x33, 0x33);
@@ -296,8 +322,7 @@ static QPalette darkPalette() {
 void restyle() {
     auto* app = qobject_cast<QApplication*>(QCoreApplication::instance());
     if (!app) return;
-    if (!gHaveLight) { gLightPalette = app->palette(); gHaveLight = true; }
-    QPalette p = isDark() ? darkPalette() : gLightPalette;
+    QPalette p = isDark() ? darkPalette() : lightPalette();
     p.setColor(QPalette::Highlight, accent());
     p.setColor(QPalette::HighlightedText, Qt::white);
     p.setColor(QPalette::Link, isDark() ? QColor(0xc4, 0xa6, 0xf0) : accent());
@@ -342,8 +367,8 @@ void install(QApplication& app) {
     f.setFamilies({"Segoe UI", "Noto Sans", "Open Sans", "Ubuntu", "Cantarell", "DejaVu Sans"});
     f.setPointSizeF(9);
     app.setFont(f);
-    gLightPalette = app.palette();
-    gHaveLight = true;
+    // the same widget style everywhere, whatever Qt style the desktop picks (X2-01)
+    if (QStyle* st = QStyleFactory::create("Fusion")) app.setStyle(st);
     isDark();
     restyle();
     auto* fol = new Follower(&app);

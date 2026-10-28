@@ -6,10 +6,17 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.3.1_amd64.deb
+sudo apt install ./folio-gable_2.6.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
+
+## What's new in 2.6
+
+- **Drawing sheets** (File › Export › Drawing sheets, the Send to LayOut command): put scenes on paper (A4 to A0, Letter, Tabloid, Arch C/D) as views, at a scale such as 1:50 for scenes in parallel projection; add dimensions that measure the model at the view's scale, labels with leaders and a title block (project, drawing, drawn by, date, scale, sheet). Several sheets per model, kept in the .gbl file; print them or save one PDF.
+- **Import 3D Studio (.3ds), Google Earth (.kmz) and IFC (.ifc)**: 3DS meshes come in as groups with their materials; a KMZ's models at their places (metres east and north of the first); an IFC's building parts as groups named after them on a tag per IFC class (IfcWall, IfcSlab, ...), with their colours and units. Openings cut into walls are not cut out yet, and spaces start hidden.
+- **Send in email** (File › Export): a new message in Folio Post (or the desktop's mail app) with the model, or a picture of the view, attached.
+- Dark or coloured desktop themes no longer show through in light mode: Gable keeps its own palette and widget style.
 
 ## What's new in 2.3
 
