@@ -72,7 +72,7 @@ static const std::map<QString, QString>& descriptions() {
         {"export3ds", "Save the model as 3D Studio (.3ds), with materials."},
         {"exportkmz", "Save the model for Google Earth, placed at its location."},
         {"exportifc", "Save the model as IFC 2x3: each group a building element."},
-        {"copyview", "Copy what the view shows as a picture, to paste into Draw, Sheets or other programs."},
+        {"copyview", "Copy what the view shows as a picture, to paste into Draw, Sheet or other programs."},
         {"interact", "Click dynamic components to make them act: open a door, change a finish."},
         {"componentoptions", "Change the options of the selected dynamic component: its size, finish and so on."},
         {"componentattributes", "Give a component behaviour: attributes and formulas that size, place, copy and animate its parts."},
