@@ -869,6 +869,8 @@ public:
             if (os == openingShapes.end() || wi == instOf.end()) continue;
             int wallIdx = wi->second;
             int wallDef = E.insts[wallIdx].def;
+            int wallMat = -1;
+            for (auto& f : model.defs[wallDef].ents.faces) if (f.alive && f.matFront >= 0) { wallMat = f.matFront; break; }
             int odef = model.addDef("Opening", true);
             model.defs[odef].ents = os->second;
             Instance oi;
@@ -887,6 +889,9 @@ public:
             }
             // the cut wall keeps its name, its IFC class and its place in the model
             int nd = E.insts[res[0]].def;
+            // the reveals of the hole are the wall's own surface
+            if (wallMat >= 0)
+                for (auto& f : model.defs[nd].ents.faces) if (f.alive && f.matFront < 0) f.matFront = wallMat;
             model.defs[nd].name = model.defs[wallDef].name;
             model.defs[nd].description = model.defs[wallDef].description;
             model.defs[wallDef].alive = false;
@@ -901,6 +906,10 @@ public:
                 if (e->type == "IFCRELVOIDSELEMENT" && arg(e, 5).k == SV::Ref && arg(e, 5).ref == oid) { used = true; break; }
             if (!used) ++skippedOpenings;
         }
+        // the import is read into its own group: drop the walls that were replaced and the cutters
+        std::vector<Instance> keep;
+        for (auto& in : E.insts) if (in.alive) keep.push_back(in);
+        E.insts = std::move(keep);
     }
 
     bool read(Model& model, Entities& E, const QByteArray& data, QString* err) {

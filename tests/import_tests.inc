@@ -227,6 +227,16 @@ DATA;
 #132=IFCSHAPEREPRESENTATION($,'Body','Tessellation',(#131));
 #133=IFCPRODUCTDEFINITIONSHAPE($,$,(#132));
 #134=IFCBUILDINGELEMENTPROXY('0007',$,'Tetra',$,$,#14,#133,$,$);
+#150=IFCCARTESIANPOINT((3000.,600.));
+#151=IFCAXIS2PLACEMENT2D(#150,$);
+#152=IFCRECTANGLEPROFILEDEF(.AREA.,$,#151,1000.,400.);
+#153=IFCCARTESIANPOINT((0.,0.,900.));
+#154=IFCAXIS2PLACEMENT3D(#153,$,$);
+#155=IFCEXTRUDEDAREASOLID(#152,#154,#11,1200.);
+#156=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#155));
+#157=IFCPRODUCTDEFINITIONSHAPE($,$,(#156));
+#158=IFCOPENINGELEMENT('0008',$,'Door hole',$,$,#14,#157,$,$);
+#159=IFCRELVOIDSELEMENT('0009',$,$,$,#36,#158);
 ENDSEC;
 END-ISO-10303-21;
 )";
@@ -239,7 +249,7 @@ END-ISO-10303-21;
     CHECK(idx >= 0);
     if (idx < 0) { std::printf("  ifc: %s\n", qPrintable(err)); return; }
     QStringList notes = takeImportNotes();
-    CHECK(notes.size() == 1 && notes[0].contains("openings"));
+    CHECK(notes.size() == 2 && notes[0].startsWith("1 openings for doors") && notes[1].startsWith("1 openings could not"));
     const Entities& g = groupOf(m, m.root, idx);
     std::map<QString, int> byName;
     for (int k = 0; k < (int)g.insts.size(); ++k) byName[g.insts[k].name] = k;
@@ -247,7 +257,9 @@ END-ISO-10303-21;
     CHECK(byName.count(QString::fromUtf8("Wall Éast")));
     if (!byName.count(QString::fromUtf8("Wall Éast")) || !byName.count("Floor") || !byName.count("Column")) return;
     int w = byName[QString::fromUtf8("Wall Éast")];
-    NEAR(defVolume(m, g, w), 4000.0 * 200 * 2700, 1e3);
+    NEAR(defVolume(m, g, w), 4000.0 * 200 * 2700 - 1000.0 * 200 * 1200, 1e3);   // the door hole is cut out (G3-01)
+    CHECK(geom::isSolid(groupOf(m, g, w)));
+    CHECK(m.defs[g.insts[w].def].description == "IfcWall");
     BBox wb = groupOf(m, g, w).bbox();
     NEAR(wb.lo.x, 1000, 1e-3);           // placement (1000, 500) plus the profile's centre (2000, 100) less half its size
     NEAR(wb.lo.y, 500, 1e-3);
