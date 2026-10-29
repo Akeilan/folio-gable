@@ -1078,8 +1078,11 @@ void MainWindow::print() {
     if (dlg.exec() != QDialog::Accepted) return;
     QRect page = printer.pageLayout().paintRectPixels(printer.resolution());
     double aspect = (double)view_->width() / std::max(1, view_->height());
-    int w = std::min(page.width(), 6000), h = (int)(w / aspect);
-    if (h > page.height()) { h = std::min(page.height(), 6000); w = (int)(h * aspect); }
+    // the view is rendered at 300 dpi: as sharp as print shows it, without gigabytes of buffers (G3-05)
+    double k = std::min(1.0, 300.0 / std::max(1, printer.resolution()));
+    int pw = std::max(1, (int)(page.width() * k)), ph = std::max(1, (int)(page.height() * k));
+    int w = std::min(pw, 4000), h = (int)(w / aspect);
+    if (h > ph) { h = std::min(ph, 4000); w = (int)(h * aspect); }
     QImage img = view_->renderImage(w, h, false);
     QPainter p(&printer);
     QRect target(0, 0, page.width(), (int)(page.width() / aspect));

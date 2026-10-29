@@ -329,6 +329,12 @@ void restyle() {
     p.setColor(QPalette::Window, ribbonBg());
     p.setColor(QPalette::ToolTipBase, isDark() ? QColor(0x2b, 0x2b, 0x2b) : QColor(Qt::white));
     p.setColor(QPalette::ToolTipText, ribbonFg());
+    // X3-05: a window without focus (Wayland shows dialogs that way) keeps exactly the same colours
+    for (int r = 0; r < QPalette::NColorRoles; ++r) {
+        auto role = (QPalette::ColorRole)r;
+        if (role == QPalette::NoRole) continue;
+        p.setBrush(QPalette::Inactive, role, p.brush(QPalette::Active, role));
+    }
     app->setPalette(p);
     app->setStyleSheet(styleSheet());
     for (QWidget* w : QApplication::allWidgets()) w->update();

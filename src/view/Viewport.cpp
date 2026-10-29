@@ -1,6 +1,7 @@
 #include "view/Viewport.h"
 #include "tools/Tool.h"
 #include <QApplication>
+#include <malloc.h>
 #include <QMouseEvent>
 #include <QOpenGLFramebufferObject>
 #include <QPainter>
@@ -134,7 +135,12 @@ QImage Viewport::renderImage(int w, int h, bool transparent) {
     makeCurrent();
     QOpenGLFramebufferObjectFormat fmt;
     fmt.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
-    fmt.setSamples(8);
+    // G3-05: multisampling multiplies the buffer by its samples; large pictures take fewer
+    // (8 samples of a 6000 x 4000 picture were 1.5 GB), keeping at most 40 million samples
+    double px = std::max(1.0, (double)w * h);
+    int samples = 8;
+    while (samples > 1 && samples * px > 40e6) samples /= 2;
+    fmt.setSamples(samples);
     QOpenGLFramebufferObject fbo(w, h, fmt);
     fbo.bind();
     int oldW = cam.w, oldH = cam.h;
@@ -156,7 +162,11 @@ QImage Viewport::renderImage(int w, int h, bool transparent) {
     QImage img = fbo.toImage(true);
     cam.w = oldW;
     cam.h = oldH;
+    fbo.release();
     doneCurrent();
+#ifdef __GLIBC__
+    if (px > 1e6) malloc_trim(0);   // hand the big buffers back to the system now
+#endif
     return img;
 }
 
