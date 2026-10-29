@@ -1,6 +1,6 @@
 # Folio Gable
 
-The 3D modeler of the Folio office suite (with Folio Writer, Folio Sheets and Folio Draw), written from scratch in C++17, Qt 6 and OpenGL 3.3 for Zorin OS / Ubuntu.
+The 3D modeler of the Folio office suite (with Folio Page, Folio Sheet, Folio Show, Folio Post and Folio Draw — together Folio Studio), written from scratch in C++17, Qt 6 and OpenGL 3.3 for Zorin OS / Ubuntu.
 It models the way SketchUp does — sticky geometry, automatic faces, inference, push/pull, the same default keyboard shortcuts — inside the suite's window: a purple title bar with the Quick Access Toolbar and command search (Alt+Q), a ribbon with KeyTips (tap Alt), and the File view for templates, recent models, export and options.
 
 ## Install
@@ -20,7 +20,7 @@ Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from t
 
 ## What's new in 2.3
 
-- **Copy View as Picture** (Home › Clipboard, Ctrl+Shift+C, 2.3.1): the view goes to the clipboard as a picture, to paste into Folio Draw, Folio Sheets or other programs.
+- **Copy View as Picture** (Home › Clipboard, Ctrl+Shift+C, 2.3.1): the view goes to the clipboard as a picture, to paste into Folio Draw, Folio Sheet or other programs.
 
 - **Materials panel › Edit**: change a material's name, colour, opacity, texture picture (load, remove, save) and tile size right in the panel, with the picture's proportions kept unless unlocked; Reset takes the texture's average colour. Each change is one undo step (a slider drag included).
 - **Material collections**: ⋯ › Export materials in model / Save current material write a `.gmat` collection; Import collection adds it to the list beside Colors and Textures, and picking from it adds the material to the model.
