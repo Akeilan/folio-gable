@@ -61,6 +61,15 @@
 
 namespace gable {
 
+// resident memory of this process, in kB (Linux)
+static long rssKb(const char* key = "VmRSS:") {
+    QFile f("/proc/self/status");
+    if (!f.open(QIODevice::ReadOnly)) return -1;
+    for (const QByteArray& l : f.readAll().split('\n'))
+        if (l.startsWith(key)) return l.mid((int)strlen(key)).trimmed().split(' ').first().toLong();
+    return -1;
+}
+
 class Auditor {
 public:
     explicit Auditor(MainWindow* w) : w(w), v(w->view_), d(w->doc_) {}
@@ -1749,8 +1758,20 @@ private:
         onModal = [&](QWidget* dlg) {
             settle(60);
             themeProblems(dlg, "dialog " + dlg->windowTitle());
+            // X3-05: the window behind the dialog is not the active one: it keeps its colours too
+            if (seen.isEmpty()) themeProblems(w, "the window behind " + dlg->windowTitle());
             seen << dlg->windowTitle();
         };
+        // X3-05: unfocused windows and dialogs (Wayland draws them inactive) use the same colours
+        {
+            QPalette ap = qApp->palette();
+            QStringList differ;
+            for (auto role : {QPalette::Window, QPalette::WindowText, QPalette::Base, QPalette::Text, QPalette::Button,
+                              QPalette::ButtonText, QPalette::Highlight, QPalette::HighlightedText, QPalette::ToolTipBase,
+                              QPalette::ToolTipText, QPalette::PlaceholderText, QPalette::Light, QPalette::Mid, QPalette::Dark})
+                if (ap.color(QPalette::Inactive, role) != ap.color(QPalette::Active, role)) differ << QString::number(role);
+            check(differ.isEmpty(), "inactive windows keep Gable's colours (roles " + differ.join(",") + ")");
+        }
         for (const char* id : {"preferences", "modelinfo", "export2d", "shortcuts", "componentattributes"}) {
             act(id);
             settle(400);
@@ -2243,6 +2264,7 @@ private:
                 }
                 validate(id);
                 if (w->backstage_->isOpen()) w->backstage_->close();
+                if (qEnvironmentVariableIsSet("AUDIT_MEMLOG")) say(QString("   mem %1 kB after %2").arg(rssKb()).arg(id));
             }
         }
     }
@@ -2410,6 +2432,7 @@ int Auditor::run() {
         sRibbonButtons();
         sPanels();
     }
+    say(QString("\npeak memory %1 MB").arg(rssKb("VmHWM:") / 1024));   // G3-05: 2.6.0 peaked at about 1.85 GB
     say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
     d->modified = false;
     return fail;

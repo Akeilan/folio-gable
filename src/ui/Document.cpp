@@ -1,6 +1,7 @@
 #include "ui/Document.h"
 #include "core/Geometry.h"
 #include "core/Serializer.h"
+#include <malloc.h>
 #include <QFile>
 #include <QSaveFile>
 
@@ -318,6 +319,11 @@ void Document::redo() {
 
 void Document::newModel() {
     model.reset();
+    undo_.clear();
+    redo_.clear();
+    rootCache_ = {};
+    defCache_.clear();
+    malloc_trim(0);   // G3-05: what the old model and its undo steps held goes back to the system
     filePath.clear();
     editPath.clear();
     sel.clear();
