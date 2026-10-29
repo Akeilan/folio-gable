@@ -251,6 +251,9 @@ void MainWindow::buildActions() {
     addAct("exportobj", "Export OBJ…", QKeySequence(), [this] { exportModel("obj"); });
     addAct("exportgltf", "Export glTF…", QKeySequence(), [this] { exportModel("glb"); });
     addAct("export3mf", "Export 3MF…", QKeySequence(), [this] { exportModel("3mf"); });
+    addAct("export3ds", "Export 3DS…", QKeySequence(), [this] { exportModel("3ds"); });
+    addAct("exportkmz", "Export Google Earth (KMZ)…", QKeySequence(), [this] { exportModel("kmz"); });
+    addAct("exportifc", "Export IFC…", QKeySequence(), [this] { exportModel("ifc"); });
     addAct("export2d", "Export 2D Graphic…", QKeySequence(), [this] { exportImage(); });
     addAct("print", "&Print…", QKeySequence::Print, [this] { print(); });
     addAct("quit", "E&xit", QKeySequence::Quit, [this] { close(); });
@@ -785,7 +788,7 @@ void MainWindow::open() {
     if (!maybeSave()) return;
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Open Model", s.value("lastDir", QDir::homePath()).toString(),
-                                              "Folio Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc);;All files (*)");
+                                              "Folio Gable models (*.gbl);;All supported (*.gbl *.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc *.gltf *.glb *.3mf);;All files (*)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     openFile(fn);
@@ -843,9 +846,9 @@ void MainWindow::refreshRecent() {
 void MainWindow::importFile() {
     QSettings s;
     QString fn = QFileDialog::getOpenFileName(this, "Import", s.value("lastDir", QDir::homePath()).toString(),
-                                              "3D models and pictures (*.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc *.gbl *.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;"
+                                              "3D models and pictures (*.obj *.stl *.dae *.dxf *.3ds *.kmz *.ifc *.gltf *.glb *.3mf *.gbl *.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff);;"
                                               "Wavefront OBJ (*.obj);;STL (*.stl);;COLLADA (*.dae);;DXF (*.dxf);;3D Studio (*.3ds);;Google Earth (*.kmz);;"
-                                              "IFC building model (*.ifc);;Folio Gable (*.gbl);;"
+                                              "IFC building model (*.ifc);;glTF (*.gltf *.glb);;3MF (*.3mf);;Folio Gable (*.gbl);;"
                                               "Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp *.tif *.tiff)");
     if (fn.isEmpty()) return;
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -925,7 +928,8 @@ void MainWindow::exportModel(const QString& forcedExt) {
     QSettings s;
     struct Fmt { const char* ext; const char* name; };
     static const Fmt fmts[] = {{"stl", "STL (3D printing)"}, {"3mf", "3MF (3D printing, with colours)"}, {"glb", "glTF binary"},
-                               {"gltf", "glTF"}, {"obj", "Wavefront OBJ"}, {"dae", "COLLADA"}, {"dxf", "AutoCAD DXF"}};
+                               {"gltf", "glTF"}, {"obj", "Wavefront OBJ"}, {"dae", "COLLADA"}, {"dxf", "AutoCAD DXF"},
+                               {"3ds", "3D Studio"}, {"kmz", "Google Earth"}, {"ifc", "IFC 2x3 building model"}};
     QString ext = forcedExt;
     QDialog dlg(this);
     dlg.setWindowTitle("Export 3D Model");
@@ -952,7 +956,7 @@ void MainWindow::exportModel(const QString& forcedExt) {
     auto sync = [&] {
         QString e = fmt->currentData().toString();
         // glTF is always Y-up metres and 3MF millimetres: those formats fix their own units
-        bool fixedUnits = e == "dae" || e == "gltf" || e == "glb" || e == "3mf";
+        bool fixedUnits = e == "dae" || e == "gltf" || e == "glb" || e == "3mf" || e == "kmz" || e == "ifc";
         binary->setEnabled(e == "stl");
         edges->setEnabled(e == "obj" || e == "dxf" || e == "gltf" || e == "glb");
         units->setEnabled(!fixedUnits);

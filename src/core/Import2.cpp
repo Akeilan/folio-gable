@@ -5,6 +5,12 @@
 #include "core/Solids.h"
 #include "core/Geometry.h"
 #include <QDir>
+#include <QUrl>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QImage>
+#include <QBuffer>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -1137,6 +1143,427 @@ bool importKMZ(Model& m, Entities& E, const QString& path, const ImportOptions& 
         ++done;
     }
     if (!done) { if (err) *err = "The .kmz file's 3D models couldn't be read."; return false; }
+    E.touch();
+    return true;
+}
+
+// ============================================================== glTF 2.0 (G3-03)
+// .gltf (JSON, with its buffers inside as data: URIs or beside it) and .glb (one binary file).
+// glTF is Y-up in metres: points come in Z-up in millimetres. Each node with a mesh becomes a
+// group at the node's place; a mesh used by several nodes becomes one component.
+
+namespace {
+
+QImage imageFromBytes(const QByteArray& b) {
+    QImage img;
+    img.loadFromData(b);
+    return img;
+}
+
+QByteArray pngOf(const QImage& img) {
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    img.save(&buf, "PNG");
+    return png;
+}
+
+}  // namespace
+
+bool importGLTF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) { if (err) *err = "Cannot open file."; return false; }
+    QByteArray data = f.readAll();
+    QByteArray json, bin;
+    if (data.startsWith("glTF")) {
+        if (data.size() < 20) { if (err) *err = "The .glb file is damaged."; return false; }
+        const uchar* b = reinterpret_cast<const uchar*>(data.constData());
+        qint64 p = 12;
+        while (p + 8 <= data.size()) {
+            quint32 len = qFromLittleEndian<quint32>(b + p), type = qFromLittleEndian<quint32>(b + p + 4);
+            if (p + 8 + len > (quint64)data.size()) break;
+            if (type == 0x4E4F534A) json = data.mid(p + 8, len);
+            else if (type == 0x004E4942) bin = data.mid(p + 8, len);
+            p += 8 + ((len + 3) & ~3u);
+        }
+    } else json = data;
+    QJsonParseError pe;
+    QJsonObject doc = QJsonDocument::fromJson(json, &pe).object();
+    if (pe.error != QJsonParseError::NoError || !doc.contains("asset")) { if (err) *err = "This isn't a glTF file."; return false; }
+    if (!doc["asset"].toObject()["version"].toString().startsWith("2")) { if (err) *err = "Only glTF 2.0 files can be imported."; return false; }
+    for (auto x : doc["extensionsRequired"].toArray()) {
+        QString ext = x.toString();
+        if (ext == "KHR_draco_mesh_compression" || ext == "EXT_meshopt_compression") {
+            if (err) *err = "This glTF file's meshes are compressed (" + ext + "), which isn't available.";
+            return false;
+        }
+    }
+    QDir dir = QFileInfo(path).dir();
+    // buffers
+    std::vector<QByteArray> buffers;
+    for (auto bv : doc["buffers"].toArray()) {
+        QString uri = bv.toObject()["uri"].toString();
+        if (uri.isEmpty()) buffers.push_back(bin);
+        else if (uri.startsWith("data:")) buffers.push_back(QByteArray::fromBase64(uri.section(',', 1).toLatin1()));
+        else {
+            QFile bf(dir.filePath(QUrl::fromPercentEncoding(uri.toUtf8())));
+            buffers.push_back(bf.open(QIODevice::ReadOnly) ? bf.readAll() : QByteArray());
+        }
+    }
+    QJsonArray views = doc["bufferViews"].toArray(), accs = doc["accessors"].toArray();
+    auto viewBytes = [&](int vi, int* stride) -> QByteArray {
+        if (vi < 0 || vi >= views.size()) return {};
+        QJsonObject v = views[vi].toObject();
+        int bi = v["buffer"].toInt(-1);
+        if (bi < 0 || bi >= (int)buffers.size()) return {};
+        if (stride) *stride = v["byteStride"].toInt(0);
+        qint64 off = v["byteOffset"].toInteger(0), len = v["byteLength"].toInteger(0);
+        if (off < 0 || len < 0 || off + len > buffers[bi].size()) return {};
+        return buffers[bi].mid(off, len);
+    };
+    // an accessor as doubles, `comps` per element
+    auto read = [&](int ai, int comps) -> std::vector<double> {
+        std::vector<double> out;
+        if (ai < 0 || ai >= accs.size()) return out;
+        QJsonObject a = accs[ai].toObject();
+        int count = a["count"].toInt(), ct = a["componentType"].toInt();
+        bool norm = a["normalized"].toBool();
+        int size = ct == 5126 || ct == 5125 ? 4 : ct == 5123 || ct == 5122 ? 2 : 1;
+        int stride = 0;
+        QByteArray v = viewBytes(a["bufferView"].toInt(-1), &stride);
+        if (v.isEmpty() || count <= 0) return out;
+        if (!stride) stride = size * comps;
+        qint64 off = a["byteOffset"].toInteger(0);
+        if (off + (qint64)(count - 1) * stride + size * comps > v.size()) return out;
+        const uchar* b = reinterpret_cast<const uchar*>(v.constData()) + off;
+        out.reserve((size_t)count * comps);
+        for (int i = 0; i < count; ++i)
+            for (int c = 0; c < comps; ++c) {
+                const uchar* p = b + (qint64)i * stride + c * size;
+                double x = 0;
+                switch (ct) {
+                case 5126: { quint32 u = qFromLittleEndian<quint32>(p); float fl; std::memcpy(&fl, &u, 4); x = fl; break; }
+                case 5125: x = qFromLittleEndian<quint32>(p); break;
+                case 5123: x = qFromLittleEndian<quint16>(p); if (norm) x /= 65535.0; break;
+                case 5122: x = (qint16)qFromLittleEndian<quint16>(p); if (norm) x = std::max(x / 32767.0, -1.0); break;
+                case 5121: x = *p; if (norm) x /= 255.0; break;
+                case 5120: x = (qint8)*p; if (norm) x = std::max(x / 127.0, -1.0); break;
+                }
+                out.push_back(x);
+            }
+        return out;
+    };
+    // materials
+    std::vector<int> mats;
+    QJsonArray images = doc["images"].toArray(), textures = doc["textures"].toArray();
+    auto imageBytes = [&](int ii) -> QByteArray {
+        if (ii < 0 || ii >= images.size()) return {};
+        QJsonObject im = images[ii].toObject();
+        if (im.contains("bufferView")) return viewBytes(im["bufferView"].toInt(), nullptr);
+        QString uri = im["uri"].toString();
+        if (uri.startsWith("data:")) return QByteArray::fromBase64(uri.section(',', 1).toLatin1());
+        QFile imf(dir.filePath(QUrl::fromPercentEncoding(uri.toUtf8())));
+        return imf.open(QIODevice::ReadOnly) ? imf.readAll() : QByteArray();
+    };
+    int k = 0;
+    for (auto mv : doc["materials"].toArray()) {
+        QJsonObject mo = mv.toObject();
+        QJsonObject pbr = mo["pbrMetallicRoughness"].toObject();
+        QJsonArray cf = pbr["baseColorFactor"].toArray();
+        double r = 1, g = 1, b = 1, a = 1;
+        if (cf.size() >= 4) { r = cf[0].toDouble(); g = cf[1].toDouble(); b = cf[2].toDouble(); a = cf[3].toDouble(); }
+        // the factors are linear light: back to the sRGB colours people pick
+        auto srgb = [](double c) { c = std::clamp(c, 0.0, 1.0); return c <= 0.0031308 ? c * 12.92 : 1.055 * std::pow(c, 1 / 2.4) - 0.055; };
+        QColor col = QColor::fromRgbF(srgb(r), srgb(g), srgb(b));
+        QString name = mo["name"].toString();
+        if (name.isEmpty()) name = QString("Material %1").arg(++k);
+        int id = m.addMaterial(name, col);
+        if (mo["alphaMode"].toString() == "BLEND") m.materials[id].alpha = std::clamp(a, 0.0, 1.0);
+        int ti = pbr["baseColorTexture"].toObject()["index"].toInt(-1);
+        if (ti >= 0 && ti < textures.size()) {
+            QImage img = imageFromBytes(imageBytes(textures[ti].toObject()["source"].toInt(-1)));
+            if (!img.isNull()) {
+                m.materials[id].texturePng = pngOf(img);
+                m.materials[id].hasTexture = true;
+                m.materials[id].texW = m.materials[id].texH = 1000;
+            }
+        }
+        mats.push_back(id);
+    }
+    // meshes as definitions (built when first used)
+    QJsonArray meshes = doc["meshes"].toArray(), nodes = doc["nodes"].toArray();
+    std::vector<int> useCount(meshes.size(), 0);
+    std::function<void(int, int)> countUses = [&](int ni, int depth) {
+        if (ni < 0 || ni >= nodes.size() || depth > 64) return;
+        QJsonObject n = nodes[ni].toObject();
+        int mi = n["mesh"].toInt(-1);
+        if (mi >= 0 && mi < meshes.size()) useCount[mi]++;
+        for (auto c : n["children"].toArray()) countUses(c.toInt(), depth + 1);
+    };
+    QJsonArray scenes = doc["scenes"].toArray();
+    int si = doc["scene"].toInt(0);
+    QJsonArray rootNodes = si < scenes.size() ? scenes[si].toObject()["nodes"].toArray() : QJsonArray();
+    if (rootNodes.isEmpty()) {
+        // no scene: every node no other node holds
+        std::set<int> held;
+        for (auto nv : nodes) for (auto c : nv.toObject()["children"].toArray()) held.insert(c.toInt());
+        for (int i = 0; i < nodes.size(); ++i) if (!held.count(i)) rootNodes.append(i);
+    }
+    for (auto r : rootNodes) countUses(r.toInt(), 0);
+    // to Z-up millimetres: (x, y, z) -> (x, -z, y) * 1000
+    Mat4 C = Mat4::scaling({1000, 1000, 1000}) * Mat4::rotation({1, 0, 0}, kPi / 2);
+    Mat4 Ci = Mat4::rotation({1, 0, 0}, -kPi / 2) * Mat4::scaling({0.001, 0.001, 0.001});
+    std::map<int, int> defOf;
+    int faces = 0;
+    auto meshDef = [&](int mi) -> int {
+        auto it = defOf.find(mi);
+        if (it != defOf.end()) return it->second;
+        QJsonObject mo = meshes[mi].toObject();
+        QString name = mo["name"].toString();
+        if (name.isEmpty()) name = QString("Mesh %1").arg(mi + 1);
+        int def = m.addDef(name, useCount[mi] <= 1);
+        Entities ents;
+        std::set<std::vector<int>> seen;
+        for (auto pv : mo["primitives"].toArray()) {
+            QJsonObject pr = pv.toObject();
+            int mode = pr["mode"].toInt(4);
+            if (mode < 4) continue;   // points and lines
+            std::vector<double> pos = read(pr["attributes"].toObject()["POSITION"].toInt(-1), 3);
+            size_t nv = pos.size() / 3;
+            if (!nv) continue;
+            std::vector<int> idx;
+            if (pr.contains("indices")) for (double x : read(pr["indices"].toInt(), 1)) idx.push_back((int)x);
+            else for (size_t i = 0; i < nv; ++i) idx.push_back((int)i);
+            std::vector<std::array<int, 3>> tris;
+            if (mode == 4) for (size_t i = 0; i + 2 < idx.size(); i += 3) tris.push_back({idx[i], idx[i + 1], idx[i + 2]});
+            else if (mode == 5) for (size_t i = 0; i + 2 < idx.size(); ++i) tris.push_back(i % 2 ? std::array<int, 3>{idx[i + 1], idx[i], idx[i + 2]} : std::array<int, 3>{idx[i], idx[i + 1], idx[i + 2]});
+            else if (mode == 6) for (size_t i = 1; i + 1 < idx.size(); ++i) tris.push_back({idx[0], idx[i], idx[i + 1]});
+            int mat = pr["material"].toInt(-1);
+            mat = mat >= 0 && mat < (int)mats.size() ? mats[mat] : -1;
+            auto P = [&](int i) { return C.point(Vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])); };
+            for (auto& t : tris) {
+                if (t[0] < 0 || t[1] < 0 || t[2] < 0 || t[0] >= (int)nv || t[1] >= (int)nv || t[2] >= (int)nv) continue;
+                if (addFaceWithHoles(ents, {P(t[0]), P(t[1]), P(t[2])}, {}, mat, &seen) >= 0) ++faces;
+            }
+        }
+        cleanupImportedMesh(ents, opt);
+        m.defs[def].ents = std::move(ents);
+        defOf[mi] = def;
+        return def;
+    };
+    auto nodeXf = [&](const QJsonObject& n) {
+        QJsonArray mx = n["matrix"].toArray();
+        Mat4 L;
+        if (mx.size() == 16) {
+            for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) L.at(r, c) = mx[c * 4 + r].toDouble();
+            return L;
+        }
+        QJsonArray t = n["translation"].toArray(), q = n["rotation"].toArray(), s = n["scale"].toArray();
+        Mat4 T, R, S;
+        if (t.size() == 3) T = Mat4::translation({t[0].toDouble(), t[1].toDouble(), t[2].toDouble()});
+        if (q.size() == 4) {
+            double x = q[0].toDouble(), y = q[1].toDouble(), z = q[2].toDouble(), w = q[3].toDouble();
+            R.at(0, 0) = 1 - 2 * (y * y + z * z); R.at(0, 1) = 2 * (x * y - z * w); R.at(0, 2) = 2 * (x * z + y * w);
+            R.at(1, 0) = 2 * (x * y + z * w); R.at(1, 1) = 1 - 2 * (x * x + z * z); R.at(1, 2) = 2 * (y * z - x * w);
+            R.at(2, 0) = 2 * (x * z - y * w); R.at(2, 1) = 2 * (y * z + x * w); R.at(2, 2) = 1 - 2 * (x * x + y * y);
+        }
+        if (s.size() == 3) S = Mat4::scaling({s[0].toDouble(), s[1].toDouble(), s[2].toDouble()});
+        return T * R * S;
+    };
+    // nodes: a node with a mesh is a group (or a component's instance) at its place; children nest
+    std::function<void(Entities&, int, int)> place = [&](Entities& into, int ni, int depth) {
+        if (ni < 0 || ni >= nodes.size() || depth > 64) return;
+        QJsonObject n = nodes[ni].toObject();
+        Mat4 xf = C * nodeXf(n) * Ci;
+        int mi = n["mesh"].toInt(-1);
+        QJsonArray kids = n["children"].toArray();
+        QString name = n["name"].toString();
+        if (kids.isEmpty()) {
+            if (mi < 0 || mi >= meshes.size()) return;
+            Instance in;
+            in.def = meshDef(mi);
+            in.xf = xf;
+            in.name = name;
+            into.insts.push_back(in);
+            return;
+        }
+        int g = m.addDef(name.isEmpty() ? QString("Group") : name, true);
+        Entities sub;
+        if (mi >= 0 && mi < meshes.size()) {
+            Instance in;
+            in.def = meshDef(mi);
+            sub.insts.push_back(in);
+        }
+        for (auto c : kids) place(sub, c.toInt(), depth + 1);
+        if (sub.insts.empty()) { m.defs[g].alive = false; return; }
+        m.defs[g].ents = std::move(sub);
+        Instance in;
+        in.def = g;
+        in.xf = xf;
+        in.name = name;
+        into.insts.push_back(in);
+    };
+    for (auto r : rootNodes) place(E, r.toInt(), 0);
+    if (!faces || E.insts.empty()) { if (err) *err = "The glTF file has no meshes with faces in it."; return false; }
+    E.touch();
+    return true;
+}
+
+// ============================================================== 3MF (G3-03)
+// The 3D Manufacturing Format: a zip with an XML model; objects are meshes or assemblies of
+// other objects, the build lists what to print. Colours come from base materials and colour groups.
+
+bool import3MF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) { if (err) *err = "Cannot open file."; return false; }
+    QByteArray z = f.readAll();
+    if (!z.startsWith("PK")) { if (err) *err = "This isn't a 3MF file."; return false; }
+    QTemporaryDir tmp;
+    QString e2;
+    if (!tmp.isValid() || !unzipTo(z, tmp.path(), &e2)) { if (err) *err = "The 3MF file is damaged."; return false; }
+    QDir d(tmp.path());
+    // the start part from the package relationships
+    QString start = "3D/3dmodel.model";
+    {
+        QFile rf(d.filePath("_rels/.rels"));
+        QDomDocument rd;
+        if (rf.open(QIODevice::ReadOnly) && rd.setContent(&rf)) {
+            auto rl = rd.elementsByTagName("Relationship");
+            for (int i = 0; i < rl.size(); ++i) {
+                QDomElement r = rl.at(i).toElement();
+                if (r.attribute("Type").endsWith("/3dmodel")) { start = r.attribute("Target"); break; }
+            }
+        }
+        while (start.startsWith('/')) start.remove(0, 1);
+    }
+    struct Obj { QDomElement e; QString file; int def = -1; int uses = 0; };
+    std::map<std::pair<QString, QString>, Obj> objs;
+    std::map<std::pair<QString, QString>, std::vector<std::pair<QString, QColor>>> props;   // basematerials / colorgroup
+    std::map<QString, QDomDocument> docs;
+    std::map<QString, double> unitOf;
+    std::function<bool(const QString&)> load = [&](const QString& file) {
+        if (docs.count(file)) return true;
+        QFile mf(d.filePath(file));
+        QDomDocument md;
+        if (!mf.open(QIODevice::ReadOnly) || !md.setContent(&mf, true)) return false;
+        docs[file] = md;
+        QDomElement root = md.documentElement();
+        static const std::map<QString, double> u = {{"micron", 0.001}, {"millimeter", 1}, {"centimeter", 10}, {"inch", 25.4}, {"foot", 304.8}, {"meter", 1000}};
+        auto it = u.find(root.attribute("unit", "millimeter"));
+        unitOf[file] = it == u.end() ? 1.0 : it->second;
+        QDomElement res = root.firstChildElement("resources");
+        for (QDomElement c = res.firstChildElement(); !c.isNull(); c = c.nextSiblingElement()) {
+            QString id = c.attribute("id");
+            if (c.localName() == "object") objs[{file, id}] = Obj{c, file};
+            else if (c.localName() == "basematerials") {
+                auto& l = props[{file, id}];
+                for (QDomElement b = c.firstChildElement(); !b.isNull(); b = b.nextSiblingElement())
+                    if (b.localName() == "base") l.push_back({b.attribute("name"), QColor(b.attribute("displaycolor").left(7))});
+            } else if (c.localName() == "colorgroup") {
+                auto& l = props[{file, id}];
+                for (QDomElement b = c.firstChildElement(); !b.isNull(); b = b.nextSiblingElement())
+                    if (b.localName() == "color") {
+                        QString cs = b.attribute("color");
+                        QColor col(cs.left(7));
+                        if (cs.size() == 9) col.setAlpha(cs.mid(7, 2).toInt(nullptr, 16));
+                        l.push_back({QString(), col});
+                    }
+            }
+        }
+        return true;
+    };
+    if (!load(start)) { if (err) *err = "The 3MF file has no 3D model in it."; return false; }
+    std::map<QString, int> matByKey;
+    auto material = [&](const QString& file, const QString& pid, int index) -> int {
+        auto it = props.find({file, pid});
+        if (it == props.end() || index < 0 || index >= (int)it->second.size()) return -1;
+        auto& [name, col] = it->second[index];
+        QString key = name + "|" + col.name(QColor::HexArgb);
+        auto mk = matByKey.find(key);
+        if (mk != matByKey.end()) return mk->second;
+        int id = m.addMaterial(name.isEmpty() ? "Color " + col.name().toUpper() : name, QColor(col.red(), col.green(), col.blue()));
+        m.materials[id].alpha = col.alphaF();
+        matByKey[key] = id;
+        return id;
+    };
+    auto xfOf = [](const QString& t) {
+        // "m00 m01 m02 m10 m11 m12 m20 m21 m22 m30 m31 m32": row vectors, x' = x m0 + y m1 + z m2 + m3
+        Mat4 r;
+        QStringList p = t.split(' ', Qt::SkipEmptyParts);
+        if (p.size() != 12) return r;
+        for (int row = 0; row < 4; ++row)
+            for (int col = 0; col < 3; ++col) r.at(col, row) = p[row * 3 + col].toDouble();
+        return r;
+    };
+    const QString prodNs = "http://schemas.microsoft.com/3dmanufacturing/production/2015/06";
+    int faces = 0;
+    std::function<int(const QString&, const QString&, int)> defFor = [&](const QString& file, const QString& id, int depth) -> int {
+        auto it = objs.find({file, id});
+        if (it == objs.end() || depth > 32) return -1;
+        Obj& o = it->second;
+        if (o.def >= 0) { m.defs[o.def].isGroup = false; return o.def; }   // used twice: a component
+        double unit = unitOf[file];
+        QString name = o.e.attribute("name");
+        if (name.isEmpty()) name = "Object " + id;
+        int def = m.addDef(name, true);
+        o.def = def;
+        Entities ents;
+        QDomElement mesh = o.e.firstChildElement("mesh");
+        if (!mesh.isNull()) {
+            std::vector<Vec3> vs;
+            QDomElement vv = mesh.firstChildElement("vertices");
+            for (QDomElement v = vv.firstChildElement("vertex"); !v.isNull(); v = v.nextSiblingElement("vertex"))
+                vs.push_back(Vec3(v.attribute("x").toDouble(), v.attribute("y").toDouble(), v.attribute("z").toDouble()) * unit);
+            QString opid = o.e.attribute("pid");
+            int opi = o.e.attribute("pindex", "0").toInt();
+            std::set<std::vector<int>> seen;
+            QDomElement tt = mesh.firstChildElement("triangles");
+            for (QDomElement t = tt.firstChildElement("triangle"); !t.isNull(); t = t.nextSiblingElement("triangle")) {
+                int a = t.attribute("v1").toInt(), b = t.attribute("v2").toInt(), c = t.attribute("v3").toInt();
+                if (a < 0 || b < 0 || c < 0 || a >= (int)vs.size() || b >= (int)vs.size() || c >= (int)vs.size()) continue;
+                int mat = t.hasAttribute("pid") || t.hasAttribute("p1")
+                              ? material(file, t.attribute("pid", opid), t.attribute("p1", QString::number(opi)).toInt())
+                              : material(file, opid, opi);
+                if (addFaceWithHoles(ents, {vs[a], vs[b], vs[c]}, {}, mat, &seen) >= 0) ++faces;
+            }
+            cleanupImportedMesh(ents, opt);
+        }
+        QDomElement comps = o.e.firstChildElement("components");
+        for (QDomElement c = comps.firstChildElement("component"); !c.isNull(); c = c.nextSiblingElement("component")) {
+            QString cf = c.attributeNS(prodNs, "path");
+            while (cf.startsWith('/')) cf.remove(0, 1);
+            if (cf.isEmpty()) cf = file;
+            else if (!load(cf)) continue;
+            int cd = defFor(cf, c.attribute("objectid"), depth + 1);
+            if (cd < 0) continue;
+            Mat4 x = xfOf(c.attribute("transform"));
+            for (int r = 0; r < 3; ++r) x.at(r, 3) *= unit;
+            Instance in;
+            in.def = cd;
+            in.xf = x;
+            ents.insts.push_back(in);
+        }
+        m.defs[def].ents = std::move(ents);
+        return def;
+    };
+    QDomElement build = docs[start].documentElement().firstChildElement("build");
+    double unit = unitOf[start];
+    for (QDomElement it = build.firstChildElement("item"); !it.isNull(); it = it.nextSiblingElement("item")) {
+        QString file = it.attributeNS(prodNs, "path");
+        while (file.startsWith('/')) file.remove(0, 1);
+        if (file.isEmpty()) file = start;
+        else if (!load(file)) continue;
+        int def = defFor(file, it.attribute("objectid"), 0);
+        if (def < 0) continue;
+        Mat4 x = xfOf(it.attribute("transform"));
+        for (int r = 0; r < 3; ++r) x.at(r, 3) *= unit;
+        Instance in;
+        in.def = def;
+        in.xf = x;
+        in.name = m.defs[def].name;
+        E.insts.push_back(in);
+    }
+    if (!faces || E.insts.empty()) { if (err) *err = "The 3MF file has no objects to print in it."; return false; }
     E.touch();
     return true;
 }

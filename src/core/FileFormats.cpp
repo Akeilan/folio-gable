@@ -857,7 +857,7 @@ static void xmlColor(QTextStream& ts, const QColor& c, double a) {
     ts << c.redF() << " " << c.greenF() << " " << c.blueF() << " " << a;
 }
 
-static bool exportDAE(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel) {
+bool exportDAE(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel) {
     std::vector<WorldTri> tris;
     std::vector<WorldEdge> edges;
     collectWorld(m, tris, opt.exportEdges ? &edges : nullptr, true, sel);
@@ -1022,7 +1022,9 @@ static bool exportGLTF(const Model& m, const QString& path, const ExportOptions&
             pbr["baseColorTexture"] = QJsonObject{{"index", (int)textures.size() - 1}};
             if (!M.colorize) c = QColor(255, 255, 255);
         }
-        pbr["baseColorFactor"] = QJsonArray{c.redF(), c.greenF(), c.blueF(), a};
+        // glTF colour factors are linear light
+        auto lin = [](double v) { return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4); };
+        pbr["baseColorFactor"] = QJsonArray{lin(c.redF()), lin(c.greenF()), lin(c.blueF()), a};
         mo["pbrMetallicRoughness"] = pbr;
         mo["name"] = mat >= 0 ? m.materials[mat].name : QString("Default");
         if (a < 1) mo["alphaMode"] = "BLEND";
@@ -1068,7 +1070,7 @@ static bool exportGLTF(const Model& m, const QString& path, const ExportOptions&
         auto fl = [](double v) { return (double)(float)v; };
         int acc = addAccessor(addView(pos, 34962), (int)edges.size() * 2, "VEC3", QJsonArray{fl(lo.x), fl(lo.y), fl(lo.z)}, QJsonArray{fl(hi.x), fl(hi.y), fl(hi.z)});
         QColor ec = m.style.edgeColor;
-        materials.append(QJsonObject{{"name", "Edges"}, {"pbrMetallicRoughness", QJsonObject{{"baseColorFactor", QJsonArray{ec.redF(), ec.greenF(), ec.blueF(), 1.0}}, {"metallicFactor", 0.0}}}});
+        materials.append(QJsonObject{{"name", "Edges"}, {"pbrMetallicRoughness", QJsonObject{{"baseColorFactor", QJsonArray{std::pow(ec.redF(), 2.2), std::pow(ec.greenF(), 2.2), std::pow(ec.blueF(), 2.2), 1.0}}, {"metallicFactor", 0.0}}}});
         primitives.append(QJsonObject{{"attributes", QJsonObject{{"POSITION", acc}}}, {"material", (int)materials.size() - 1}, {"mode", 1}});
     }
     pad4(bin);
@@ -1132,7 +1134,7 @@ static quint32 crc32Of(const QByteArray& d) {
 }
 
 // A ZIP archive with deflated entries (what 3MF packages are).
-static QByteArray zipArchive(const std::vector<std::pair<QString, QByteArray>>& files) {
+QByteArray zipArchive(const std::vector<std::pair<QString, QByteArray>>& files) {
     auto u16 = [](QByteArray& b, quint16 v) { b.append((char)(v & 0xff)); b.append((char)(v >> 8)); };
     auto u32 = [](QByteArray& b, quint32 v) { for (int i = 0; i < 4; ++i) b.append((char)((v >> (8 * i)) & 0xff)); };
     QByteArray out, cd;
@@ -1275,6 +1277,9 @@ int importDAEInto(Model& m, Entities& target, const QString& path, const ImportO
     return importFile(m, target, path, opt, err);
 }
 
+bool importGLTF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
+bool import3MF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
+
 int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
     QString ext = QFileInfo(path).suffix().toLower();
     QString name = QFileInfo(path).completeBaseName();
@@ -1327,6 +1332,8 @@ int importFile(Model& m, Entities& target, const QString& path, const ImportOpti
     Entities tmp;
     bool ok = false;
     if (ext == "obj") ok = importOBJ(m, tmp, path, opt, err);
+    else if (ext == "gltf" || ext == "glb") ok = importGLTF(m, tmp, path, opt, err);
+    else if (ext == "3mf") ok = import3MF(m, tmp, path, opt, err);
     else if (ext == "stl") ok = importSTL(m, tmp, path, opt, err);
     else if (ext == "dxf") ok = importDXF(m, tmp, path, opt, err);
     else if (err) *err = "Unsupported file type: " + ext;
@@ -1339,6 +1346,10 @@ int importFile(Model& m, Entities& target, const QString& path, const ImportOpti
     return (int)target.insts.size() - 1;
 }
 
+bool export3DS(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel);
+bool exportKMZ(const Model& m, const QString& path, QString* err, const std::vector<EntRef>* sel);
+bool exportIFC(const Model& m, const QString& path, QString* err, const std::vector<EntRef>* sel);
+
 bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel) {
     QString ext = QFileInfo(path).suffix().toLower();
     if (ext == "obj") return exportOBJ(m, path, opt, err, sel);
@@ -1347,6 +1358,9 @@ bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, Q
     if (ext == "dxf") return exportDXF(m, path, opt, err, sel);
     if (ext == "gltf" || ext == "glb") return exportGLTF(m, path, opt, err, sel, ext == "glb");
     if (ext == "3mf") return export3MF(m, path, err, sel);
+    if (ext == "3ds") return export3DS(m, path, opt, err, sel);
+    if (ext == "kmz") return exportKMZ(m, path, err, sel);
+    if (ext == "ifc") return exportIFC(m, path, err, sel);
     if (err) *err = "Unsupported export type: " + ext;
     return false;
 }

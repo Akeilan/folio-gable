@@ -286,9 +286,131 @@ END-ISO-10303-21;
     importFile(m, m.root, dir + "/cut.ifc", io, &err);   // a file cut short must not crash
 }
 
+// G3-02: 3D Studio, Google Earth and IFC 2x3 out, and back in again
+static void testExports2(const QString& dir) {
+    Model m;
+    int red = m.addMaterial("Red brick", QColor(200, 40, 30));
+    Tag wt;
+    wt.name = "IfcWall";
+    m.tags.push_back(wt);
+    int wallTag = (int)m.tags.size() - 1;
+    int wd = m.addDef("Wall", true);
+    box(m.defs[wd].ents, 0, 0, 4000, 200, 2700);
+    for (auto& F : m.defs[wd].ents.faces) F.matFront = red;
+    Instance wi;
+    wi.def = wd;
+    wi.name = QString::fromUtf8("Wall Ö");
+    wi.tag = wallTag;
+    m.root.insts.push_back(wi);
+    int cd = m.addDef("Chair", false);
+    box(m.defs[cd].ents, 0, 0, 500, 500, 900);
+    Instance ci;
+    ci.def = cd;
+    ci.xf = Mat4::translation({1000, 1000, 0});
+    m.root.insts.push_back(ci);
+    QString err;
+    ExportOptions eo;
+    // 3DS: one mesh per part, the materials named, back in with the same volumes
+    CHECK(exportFile(m, dir + "/out.3ds", eo, &err));
+    Model a;
+    ImportOptions io;
+    int ia = importFile(a, a.root, dir + "/out.3ds", io, &err);
+    CHECK(ia >= 0);
+    if (ia >= 0) {
+        const Entities& g = groupOf(a, a.root, ia);
+        CHECK(g.insts.size() == 2);
+        double vol = 0;
+        for (int k = 0; k < (int)g.insts.size(); ++k) vol += defVolume(a, g, k);
+        NEAR(vol, 4000.0 * 200 * 2700 + 500.0 * 500 * 900, 1e3);
+        CHECK(a.findMaterial("Red brick") >= 0);
+    }
+    // KMZ: a KML placemark at the model's location with the COLLADA model inside
+    m.shadow.latitude = 52.37;
+    m.shadow.longitude = 4.89;
+    CHECK(exportFile(m, dir + "/out.kmz", eo, &err));
+    QFile kz(dir + "/out.kmz");
+    CHECK(kz.open(QIODevice::ReadOnly) && kz.readAll().contains("models/model.dae"));
+    Model b;
+    int ib = importFile(b, b.root, dir + "/out.kmz", io, &err);
+    CHECK(ib >= 0);
+    if (ib >= 0) {
+        std::vector<WorldTri> tris;
+        collectWorld(b, tris, nullptr, true);
+        BBox bb;
+        for (auto& t : tris) for (auto& p : t.p) bb.add(p);
+        NEAR(bb.hi.x - bb.lo.x, 4000, 1);
+        NEAR(bb.hi.z - bb.lo.z, 2700, 1);
+    }
+    // IFC 2x3: the wall as an IfcWall, the chair as a proxy, both solid with their names
+    CHECK(exportFile(m, dir + "/out.ifc", eo, &err));
+    QFile fi(dir + "/out.ifc");
+    CHECK(fi.open(QIODevice::ReadOnly));
+    QByteArray ifc = fi.readAll();
+    CHECK(ifc.contains("FILE_SCHEMA(('IFC2X3'))") && ifc.contains("IFCWALL(") && ifc.contains("IFCBUILDINGELEMENTPROXY("));
+    CHECK(ifc.contains("IFCFACETEDBREP(") && ifc.contains("IFCRELCONTAINEDINSPATIALSTRUCTURE(") && ifc.contains("IFCOWNERHISTORY("));
+    CHECK(ifc.contains("'Wall \\X2\\00D6\\X0\\'"));
+    Model c;
+    int ic = importFile(c, c.root, dir + "/out.ifc", io, &err);
+    CHECK(ic >= 0);
+    if (ic >= 0) {
+        const Entities& g = groupOf(c, c.root, ic);
+        CHECK(g.insts.size() == 2);
+        std::map<QString, int> byName;
+        for (int k = 0; k < (int)g.insts.size(); ++k) byName[g.insts[k].name] = k;
+        CHECK(byName.count(QString::fromUtf8("Wall Ö")) && byName.count("Chair"));
+        if (byName.count(QString::fromUtf8("Wall Ö"))) {
+            int w = byName[QString::fromUtf8("Wall Ö")];
+            CHECK(c.tags[g.insts[w].tag].name == "IfcWall");
+            CHECK(geom::isSolid(groupOf(c, g, w)));
+            NEAR(defVolume(c, g, w), 4000.0 * 200 * 2700, 1e3);
+            int mf = -1;
+            for (auto& F : groupOf(c, g, w).faces) if (F.alive) mf = F.matFront;
+            CHECK(mf >= 0 && c.materials[mf].name == "Red brick");
+        }
+        if (byName.count("Chair")) CHECK(c.tags[g.insts[byName["Chair"]].tag].name == "IfcBuildingElementProxy");
+    }
+    // G3-03: glTF (both kinds) and 3MF back in, at the right size and the right way up
+    for (QString ext : {"glb", "gltf", "3mf"}) {
+        CHECK(exportFile(m, dir + "/rt." + ext, eo, &err));
+        Model r;
+        int ir = importFile(r, r.root, dir + "/rt." + ext, io, &err);
+        CHECK(ir >= 0);
+        if (ir < 0) { std::printf("  %s: %s\n", qPrintable(ext), qPrintable(err)); continue; }
+        std::vector<WorldTri> tris;
+        collectWorld(r, tris, nullptr, true);
+        BBox bb;
+        double vol = 0;
+        for (auto& t : tris) {
+            for (auto& p : t.p) bb.add(p);
+            vol += t.p[0].dot((t.p[1] - t.p[0]).cross(t.p[2] - t.p[0])) / 6;
+        }
+        NEAR(bb.hi.x - bb.lo.x, 4000, 1);
+        NEAR(bb.hi.y - bb.lo.y, 1500, 1);
+        NEAR(bb.hi.z - bb.lo.z, 2700, 1);
+        NEAR(vol, 4000.0 * 200 * 2700 + 500.0 * 500 * 900, 1e4);
+        bool redIn = false;
+        for (auto& t : tris) redIn |= t.material >= 0 && r.materials[t.material].color.red() > 150 && r.materials[t.material].color.green() < 80;
+        CHECK(redIn);
+    }
+    {
+        QFile bad(dir + "/bad.glb");
+        bad.open(QIODevice::WriteOnly);
+        bad.write("glTF\x02\0\0\0\x14\0\0\0junk");
+    }
+    Model rb;
+    CHECK(importFile(rb, rb.root, dir + "/bad.glb", io, &err) < 0 && !err.isEmpty());
+    { QFile bad(dir + "/bad.3mf"); bad.open(QIODevice::WriteOnly); bad.write("PK\x03\x04 not really"); }
+    CHECK(importFile(rb, rb.root, dir + "/bad.3mf", io, &err) < 0 && !err.isEmpty());
+    Model e;
+    CHECK(!exportFile(e, dir + "/e.ifc", eo, &err) && !err.isEmpty());
+    CHECK(!exportFile(e, dir + "/e.3ds", eo, &err) && !err.isEmpty());
+    CHECK(!exportFile(e, dir + "/e.kmz", eo, &err) && !err.isEmpty());
+}
+
 static void testImports() {
     QTemporaryDir d;
     test3DS(d.path());
     testKMZ(d.path());
     testIFC(d.path());
+    testExports2(d.path());
 }
