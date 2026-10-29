@@ -2,6 +2,7 @@
 // All read here, from the formats' published structure; no outside libraries besides zlib for the
 // zip inside a .kmz.
 #include "core/FileFormats.h"
+#include "core/Solids.h"
 #include "core/Geometry.h"
 #include <QDir>
 #include <QDomDocument>
@@ -851,6 +852,56 @@ public:
 
     std::map<QString, int> unknown;
     int clipped = 0;
+    std::unordered_map<int, Entities> openingShapes;   // IfcOpeningElement id -> its solid
+    std::unordered_map<int, int> instOf;               // product id -> instance in the import
+    int cutCount = 0;
+
+    // IfcRelVoidsElement(GlobalId, OwnerHistory, Name, Description, RelatingBuildingElement,
+    // RelatedOpeningElement): each opening is subtracted from its wall, as a solid operation.
+    void cutOpenings(Model& model, Entities& E, const std::vector<std::pair<int, const Ent*>>& list) {
+        for (auto& [id, e] : list) {
+            if (e->type != "IFCRELVOIDSELEMENT") continue;
+            const SV& wallRef = arg(e, 4);
+            const SV& openRef = arg(e, 5);
+            if (wallRef.k != SV::Ref || openRef.k != SV::Ref) continue;
+            auto os = openingShapes.find(openRef.ref);
+            auto wi = instOf.find(wallRef.ref);
+            if (os == openingShapes.end() || wi == instOf.end()) continue;
+            int wallIdx = wi->second;
+            int wallDef = E.insts[wallIdx].def;
+            int odef = model.addDef("Opening", true);
+            model.defs[odef].ents = os->second;
+            Instance oi;
+            oi.def = odef;
+            E.insts.push_back(oi);
+            int openIdx = (int)E.insts.size() - 1;
+            std::vector<int> res;
+            QString why;
+            bool ok = solidOperation(model, E, openIdx, wallIdx, SolidOp::Subtract, &why, &res);
+            model.defs[odef].alive = false;
+            model.defs[odef].ents.clear();
+            E.insts[openIdx].alive = false;
+            if (!ok || res.empty()) {
+                ++skippedOpenings;
+                continue;
+            }
+            // the cut wall keeps its name, its IFC class and its place in the model
+            int nd = E.insts[res[0]].def;
+            model.defs[nd].name = model.defs[wallDef].name;
+            model.defs[nd].description = model.defs[wallDef].description;
+            model.defs[wallDef].alive = false;
+            model.defs[wallDef].ents.clear();
+            wi->second = res[0];
+            ++cutCount;
+        }
+        // openings that void nothing that was read
+        for (auto& [oid, sh] : openingShapes) {
+            bool used = false;
+            for (auto& [id, e] : list)
+                if (e->type == "IFCRELVOIDSELEMENT" && arg(e, 5).k == SV::Ref && arg(e, 5).ref == oid) { used = true; break; }
+            if (!used) ++skippedOpenings;
+        }
+    }
 
     bool read(Model& model, Entities& E, const QByteArray& data, QString* err) {
         StepParser p(data);
@@ -910,8 +961,8 @@ public:
             if (e->args.size() < 7 || arg(e, 6).k != SV::Ref || !e->type.startsWith("IFC")) continue;
             const Ent* pds = ent(arg(e, 6));
             if (!pds || pds->type != "IFCPRODUCTDEFINITIONSHAPE") continue;
-            if (e->type == "IFCOPENINGELEMENT") { ++skippedOpenings; continue; }
-            if (skip.contains(e->type) && e->type != "IFCSITE") continue;
+            bool opening = e->type == "IFCOPENINGELEMENT";
+            if (!opening && skip.contains(e->type) && e->type != "IFCSITE") continue;
             Mat4 place = objectPlacement(arg(e, 5));
             Entities sub;
             int mat = styleOf(id);
@@ -922,8 +973,13 @@ public:
                 if (!ident.isEmpty() && ident != "Body" && ident != "Facetation" && ident != "Mesh" && ident != "Brep") continue;
                 for (auto& it : arg(rep, 3).list) item(sub, it, place, mat);
             }
-            if (sub.faces.empty()) continue;
+            if (sub.faces.empty()) { if (opening) ++skippedOpenings; continue; }
             cleanupImportedMesh(sub, opt);
+            if (opening) {
+                // kept aside: cut out of the wall it voids below (G3-01)
+                openingShapes[id] = std::move(sub);
+                continue;
+            }
             QString cls = "Ifc" + e->type.mid(3, 1) + e->type.mid(4).toLower();
             // keep the usual capitals of IFC class names
             static const QHash<QString, QString> names = {
@@ -944,15 +1000,18 @@ public:
             in.name = name;
             in.tag = tagFor(cls);
             E.insts.push_back(in);
+            instOf[id] = (int)E.insts.size() - 1;
             ++products;
         }
+        cutOpenings(model, E, list);
         if (!products) {
             QString why;
             for (auto& [t, c] : unknown) why += QString("\n  %1 (%2)").arg(t).arg(c);
             if (err) *err = "No building parts with shapes Folio Gable can read were found in the IFC file." + (why.isEmpty() ? QString() : "\nShapes not read:" + why);
             return false;
         }
-        if (skippedOpenings) notes << QString("%1 openings (doors and windows cut into walls) are not cut out.").arg(skippedOpenings);
+        if (cutCount) notes << QString("%1 openings for doors and windows cut into the walls.").arg(cutCount);
+        if (skippedOpenings) notes << QString("%1 openings could not be cut (a wall or the opening isn't a closed solid).").arg(skippedOpenings);
         if (clipped) notes << QString("%1 clipped shapes come in without the clipping.").arg(clipped);
         E.touch();
         return true;
