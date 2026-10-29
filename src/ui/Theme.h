@@ -16,7 +16,7 @@ bool isDark();
 void setDark(bool dark);            // re-styles the whole application (also used by tests)
 bool systemPrefersDark();
 
-// Suite palette (Folio Writer's chrome with Gable's purple accent); dark mode has its own.
+// Suite palette (Folio Page's chrome with Gable's purple accent); dark mode has its own.
 inline QColor accent() { return QColor(0x6b, 0x3f, 0xa0); }      // title bar, active tab, default buttons
 inline QColor accentDark() { return QColor(0x4b, 0x2a, 0x78); }
 inline QColor accentHover() { return QColor(0x5a, 0x33, 0x8a); }
