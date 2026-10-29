@@ -748,7 +748,7 @@ private:
         w->newFile();
         check(w->openFile(dir + "/a.gbl"), "reopen");
         check(faces() == f, "reopened faces");
-        for (auto ext : {"stl", "obj", "dae", "dxf", "gltf", "glb", "3mf"}) {
+        for (auto ext : {"stl", "obj", "dae", "dxf", "gltf", "glb", "3mf", "3ds", "kmz", "ifc"}) {
             ExportOptions eo;
             check(exportFile(d->model, dir + "/a." + ext, eo, &err), QString("export %1 %2").arg(ext, err));
         }
