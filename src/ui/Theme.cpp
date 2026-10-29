@@ -153,7 +153,7 @@ QStatusBar::item { border: none; }
 QStatusBar QLineEdit { background: #ffffff; border: 1px solid #c6c6c6; border-radius: 2px; min-height: 18px; padding: 0 4px; }
 QStatusBar QLineEdit:focus { border-color: @accent; }
 
-/* scene tabs: like the sheet tabs of Folio Sheets */
+/* scene tabs: like the sheet tabs of Folio Sheet */
 QTabBar#sceneTabs { background: #f3f3f3; }
 QTabBar#sceneTabs::tab { background: transparent; border: none; border-right: 1px solid #d0d0d0; padding: 3px 14px;
   color: #333333; min-height: 18px; }

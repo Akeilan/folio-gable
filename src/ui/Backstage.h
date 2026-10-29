@@ -1,4 +1,4 @@
-// Folio Gable — the File view (Backstage), laid out like Folio Writer's and Folio Sheets':
+// Folio Gable — the File view (Backstage), laid out like Folio Page's and Folio Sheet's:
 // Home, New, Open, Info, Save, Save As, Import, Print, Export, Close, Options.
 #pragma once
 #include <QPixmap>
