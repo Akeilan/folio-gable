@@ -165,6 +165,16 @@ bool flipEdge(Entities& E, int e) {
     for (int v : fa->outer) if (v != a && v != b) c = v;
     for (int v : fb->outer) if (v != a && v != b) d = v;
     if (c < 0 || d < 0 || c == d || E.findEdge(c, d) >= 0) return false;
+    {
+        // only when the two triangles make a convex shape: the new diagonal must cross the old
+        // one, or a triangle comes out inside out (G7-14)
+        Vec3 n = (fa->plane.n + fb->plane.n);
+        if (n.length() < 1e-9) return false;
+        Frame2 fr(Plane(n.normalized(), E.verts[a].p));
+        Vec2 A = fr.to2(E.verts[a].p), B = fr.to2(E.verts[b].p), C = fr.to2(E.verts[c].p), D = fr.to2(E.verts[d].p);
+        double d1 = (B - A).cross(C - A), d2 = (B - A).cross(D - A), d3 = (D - C).cross(A - C), d4 = (D - C).cross(B - C);
+        if (!(d1 * d2 < 0 && d3 * d4 < 0)) return false;
+    }
     Edge old = E.edges[e];
     int mf = fa->matFront, mb = fa->matBack;
     E.removeFace(fs[0]);

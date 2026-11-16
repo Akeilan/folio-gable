@@ -238,11 +238,16 @@ class OutlinerPanel : public QWidget {
 public:
     OutlinerPanel(Document* d, QWidget* parent = nullptr);
     void refresh();
+    void startRename(QTreeWidgetItem* it);   // edit the name in place (also used by the audit)
+    QTreeWidget* tree() const { return tree_; }
 private:
     Document* doc_;
     QTreeWidget* tree_;
     QLineEdit* filter_;
     bool updating_ = false;
+    QTreeWidgetItem* renaming_ = nullptr;
+    Instance* instanceAt(const QList<int>& path);
+    void rename(const QList<int>& path, const QString& name);
 };
 
 class SoftenPanel : public QWidget {

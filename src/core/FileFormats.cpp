@@ -15,6 +15,7 @@
 #include <QUrl>
 #include <array>
 #include <cmath>
+#include <climits>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -35,7 +36,14 @@ static Vec3 outP(const Vec3& p, const ExportOptions& o) {
 static Vec3 outN(const Vec3& n, const ExportOptions& o) { return o.swapYZ ? Vec3(n.x, n.z, -n.y) : n; }
 
 // Adds a polygon face from positions; returns face id or -1.
+// A damaged file can hold impossible coordinates (not numbers, or thousands of kilometres out):
+// faces with those are left out rather than spoiling the model (G7-27).
+bool sanePoint(const Vec3& p) {
+    return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) && std::fabs(p.x) < 1e10 && std::fabs(p.y) < 1e10 && std::fabs(p.z) < 1e10;
+}
+
 static int addPolyFace(Entities& E, const std::vector<Vec3>& pts, int mat, std::set<std::vector<int>>& seen) {
+    for (auto& p : pts) if (!sanePoint(p)) return -1;
     std::vector<int> loop;
     for (auto& p : pts) {
         int v = E.vertexAt(p);
@@ -63,20 +71,107 @@ static int addPolyFace(Entities& E, const std::vector<Vec3>& pts, int mat, std::
     return f;
 }
 
-void cleanupImportedMesh(Entities& E, const ImportOptions& opt) {
-    if (opt.mergeCoplanar) {
-        std::vector<int> all;
-        for (int e = 0; e < (int)E.edges.size(); ++e)
-            if (E.edges[e].alive) {
-                auto& fl = E.edges[e].faces;
-                if (fl.size() == 2) {
-                    const Face& A = E.faces[fl[0]];
-                    const Face& B = E.faces[fl[1]];
-                    if (A.matFront == B.matFront && A.plane.n.dot(B.plane.n) > 1 - 1e-9) all.push_back(e);
-                }
-            }
-        if (!all.empty()) geom::mergeCoplanarAcross(E, all);
+// Joins the triangles of an imported mesh that lie in one plane (with one material) into a face
+// each. Regions are found by walking shared edges, and each region's outline is read off the
+// edges only one of its triangles uses, so the work is linear in the mesh. A region whose
+// outline can't be read as clean loops (it pinches at a corner, or a neighbour's corner sits on
+// its edge in a way that leaves a gap) keeps its triangles: nothing is ever lost (G7-16, G7-17).
+static void mergeCoplanarRegions(Entities& E) {
+    int nf = (int)E.faces.size();
+    std::vector<int> parent(nf);
+    for (int i = 0; i < nf; ++i) parent[i] = i;
+    std::function<int(int)> root = [&](int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+    auto same = [&](const Face& A, const Face& B) {
+        return A.matFront == B.matFront && A.matBack == B.matBack && A.plane.n.dot(B.plane.n) > 1 - 1e-9 &&
+               std::fabs(A.plane.d - B.plane.d) < 1e-3 && !A.hidden && !B.hidden;
+    };
+    for (int e = 0; e < (int)E.edges.size(); ++e) {
+        const Edge& Ed = E.edges[e];
+        if (!Ed.alive || Ed.faces.size() != 2 || Ed.soft) continue;
+        const Face& A = E.faces[Ed.faces[0]];
+        const Face& B = E.faces[Ed.faces[1]];
+        if (A.alive && B.alive && same(A, B)) parent[root(Ed.faces[0])] = root(Ed.faces[1]);
     }
+    std::unordered_map<int, std::vector<int>> regions;
+    for (int f = 0; f < nf; ++f) if (E.faces[f].alive) regions[root(f)].push_back(f);
+    for (auto& [r, fs] : regions) {
+        if (fs.size() < 2) continue;
+        std::unordered_set<int> in(fs.begin(), fs.end());
+        // boundary half-edges, in the direction each face runs round them
+        std::unordered_map<int, std::vector<int>> next;   // from vertex -> to vertices
+        std::vector<int> interior;
+        bool bad = false;
+        for (int f : fs) {
+            const Face& F = E.faces[f];
+            if (!F.holes.empty()) { bad = true; break; }
+            for (size_t i = 0; i < F.outer.size(); ++i) {
+                int a = F.outer[i], b = F.outer[(i + 1) % F.outer.size()];
+                int e = E.findEdge(a, b);
+                if (e < 0) { bad = true; break; }
+                int k = 0;
+                for (int g : E.edges[e].faces) if (in.count(g)) ++k;
+                if (k == 1) next[a].push_back(b);
+                else if (k == 2 && E.edges[e].faces.size() == 2) { if (a < b) interior.push_back(e); }
+                else { bad = true; break; }
+            }
+            if (bad) break;
+        }
+        if (bad) continue;
+        std::vector<std::vector<int>> loops;
+        std::unordered_set<int> usedFrom;
+        for (auto& [v0, tos] : next) {
+            if (tos.size() != 1) { bad = true; break; }
+        }
+        if (bad) continue;
+        for (auto& [v0, tos] : next) {
+            if (usedFrom.count(v0)) continue;
+            std::vector<int> L;
+            int v = v0;
+            while (!usedFrom.count(v)) {
+                usedFrom.insert(v);
+                L.push_back(v);
+                auto it = next.find(v);
+                if (it == next.end()) { bad = true; break; }
+                v = it->second[0];
+            }
+            if (bad || v != v0 || L.size() < 3) { bad = true; break; }
+            loops.push_back(L);
+        }
+        if (bad || loops.empty()) continue;
+        const Face F0 = E.faces[fs[0]];
+        Frame2 fr(F0.plane);
+        auto signedArea = [&](const std::vector<int>& L) {
+            double a = 0;
+            for (size_t i = 0; i < L.size(); ++i) a += fr.to2(E.verts[L[i]].p).cross(fr.to2(E.verts[L[(i + 1) % L.size()]].p));
+            return a / 2;
+        };
+        size_t outer = 0;
+        for (size_t i = 1; i < loops.size(); ++i)
+            if (std::fabs(signedArea(loops[i])) > std::fabs(signedArea(loops[outer]))) outer = i;
+        if (signedArea(loops[outer]) <= 0) continue;   // outline runs the wrong way: leave it
+        std::vector<std::vector<int>> holes;
+        for (size_t i = 0; i < loops.size(); ++i)
+            if (i != outer) {
+                if (signedArea(loops[i]) >= 0) { bad = true; break; }
+                holes.push_back(loops[i]);
+            }
+        if (bad) continue;
+        for (int f : fs) E.removeFace(f);
+        for (int e : interior) if (E.edges[e].alive && E.edges[e].faces.empty()) E.removeEdge(e);
+        int nfc = E.addFace(loops[outer], holes, F0.plane);
+        if (nfc >= 0) {
+            Face& N = E.faces[nfc];
+            N.matFront = F0.matFront; N.matBack = F0.matBack; N.texFront = F0.texFront; N.texBack = F0.texBack; N.tag = F0.tag;
+        }
+    }
+    for (int v = 0; v < (int)E.verts.size(); ++v) if (E.verts[v].alive) E.removeVertexIfOrphan(v);
+}
+
+void cleanupImportedMesh(Entities& E, const ImportOptions& opt) {
+    // triangles with no area (three corners on one line) cover nothing and only confuse the model
+    for (int f = 0; f < (int)E.faces.size(); ++f)
+        if (E.faces[f].alive && E.faceArea(f) < kTol * kTol) E.removeFace(f);
+    if (opt.mergeCoplanar) mergeCoplanarRegions(E);
     double cosLim = std::cos(opt.smoothAngle * kPi / 180);
     for (auto& e : E.edges) {
         if (!e.alive || e.faces.size() != 2) continue;
@@ -101,8 +196,8 @@ static Vec2 faceUV(const Face& F, const TexMap& t, const Vec3& p, const Material
 
 void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<WorldEdge>* edges, bool visibleOnly,
                   const std::vector<EntRef>* sel) {
-    std::function<void(const Entities&, const Mat4&, int, const std::vector<EntRef>*)> walk =
-        [&](const Entities& E, const Mat4& xf, int inheritMat, const std::vector<EntRef>* s) {
+    std::function<void(const Entities&, const Mat4&, int, const std::vector<EntRef>*, int)> walk =
+        [&](const Entities& E, const Mat4& xf, int inheritMat, const std::vector<EntRef>* s, int inheritTag) {
             std::set<EntRef> ss;
             if (s) ss.insert(s->begin(), s->end());
             auto tagVis = [&](int t) { return !visibleOnly || t < 0 || t >= (int)m.tags.size() || m.tags[t].visible; };
@@ -134,6 +229,7 @@ void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<World
                     t.uv[2] = uvOf(buf[k2]);
                     t.n = n;
                     t.material = mat;
+                    t.tag = F.tag > 0 ? F.tag : inheritTag;
                     tris.push_back(t);
                 }
             }
@@ -142,16 +238,16 @@ void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<World
                     const Edge& Ed = E.edges[e];
                     if (!Ed.alive || Ed.soft || Ed.hidden || !tagVis(Ed.tag)) continue;
                     if (s && !ss.count({EntKind::Edge, e})) continue;
-                    edges->push_back({xf.point(E.verts[Ed.v[0]].p), xf.point(E.verts[Ed.v[1]].p)});
+                    edges->push_back({xf.point(E.verts[Ed.v[0]].p), xf.point(E.verts[Ed.v[1]].p), Ed.tag > 0 ? Ed.tag : inheritTag});
                 }
             for (int i = 0; i < (int)E.insts.size(); ++i) {
                 const Instance& in = E.insts[i];
                 if (!in.alive || in.def < 0 || (visibleOnly && in.hidden) || !tagVis(in.tag)) continue;
                 if (s && !ss.count({EntKind::Instance, i})) continue;
-                walk(m.defs[in.def].ents, xf * in.xf, in.material >= 0 ? in.material : inheritMat, nullptr);
+                walk(m.defs[in.def].ents, xf * in.xf, in.material >= 0 ? in.material : inheritMat, nullptr, in.tag > 0 ? in.tag : inheritTag);
             }
         };
-    walk(m.root, Mat4(), -1, sel);
+    walk(m.root, Mat4(), -1, sel, 0);
 }
 
 // ------------------------------------------------------------------ OBJ
@@ -265,19 +361,26 @@ static bool exportOBJ(const Model& m, const QString& path, const ExportOptions& 
     ts << "# Exported by Folio Gable\nmtllib " << mtlName << "\n";
     std::map<int, std::vector<const WorldTri*>> byMat;
     for (auto& t : tris) byMat[t.material].push_back(&t);
-    int vbase = 1, nbase = 1;
+    int vbase = 1, nbase = 1, tbase = 1;
     for (auto& [mat, list] : byMat) {
         ts << "usemtl " << (mat >= 0 ? QString(m.materials[mat].name).replace(' ', '_') : QString("Default")) << "\n";
+        bool textured = mat >= 0 && m.materials[mat].hasTexture;
         for (auto* t : list) {
             for (int k = 0; k < 3; ++k) {
                 Vec3 p = outP(t->p[k], opt);
                 ts << "v " << p.x << " " << p.y << " " << p.z << "\n";
+                if (textured) ts << "vt " << t->uv[k].x << " " << t->uv[k].y << "\n";
             }
             Vec3 n = outN(t->n, opt);
             ts << "vn " << n.x << " " << n.y << " " << n.z << "\n";
-            ts << "f " << vbase << "//" << nbase << " " << vbase + 1 << "//" << nbase << " " << vbase + 2 << "//" << nbase << "\n";
+            if (textured)
+                ts << "f " << vbase << "/" << tbase << "/" << nbase << " " << vbase + 1 << "/" << tbase + 1 << "/" << nbase << " "
+                   << vbase + 2 << "/" << tbase + 2 << "/" << nbase << "\n";
+            else
+                ts << "f " << vbase << "//" << nbase << " " << vbase + 1 << "//" << nbase << " " << vbase + 2 << "//" << nbase << "\n";
             vbase += 3;
             nbase += 1;
+            if (textured) tbase += 3;
         }
     }
     for (auto& e : edges) {
@@ -295,7 +398,14 @@ static bool exportOBJ(const Model& m, const QString& path, const ExportOptions& 
             const Material& M = m.materials[mat];
             ms << "newmtl " << QString(M.name).replace(' ', '_') << "\n";
             ms << "Kd " << M.color.redF() << " " << M.color.greenF() << " " << M.color.blueF() << "\n";
-            ms << "d " << M.alpha << "\n\n";
+            ms << "d " << M.alpha << "\n";
+            if (M.hasTexture && !M.texturePng.isEmpty()) {
+                // the picture goes beside the model, as the Export page promises (G7-24)
+                QString tex = QString("%1_tex%2.png").arg(QFileInfo(path).completeBaseName()).arg(mat);
+                QFile tf(QFileInfo(path).dir().filePath(tex));
+                if (tf.open(QIODevice::WriteOnly)) { tf.write(M.texturePng); ms << "map_Kd " << tex << "\n"; }
+            }
+            ms << "\n";
         }
     }
     return true;
@@ -470,91 +580,391 @@ static bool exportSTL(const Model& m, const QString& path, const ExportOptions& 
 
 // ------------------------------------------------------------------ DXF
 
-static bool importDXF(Model&, Entities& E, const QString& path, const ImportOptions& opt, QString* err) {
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) { if (err) *err = "Cannot open file."; return false; }
-    QTextStream ts(&f);
-    std::vector<std::pair<int, QString>> pairs;
-    while (!ts.atEnd()) {
-        QString code = ts.readLine().trimmed();
-        if (ts.atEnd()) break;
-        QString val = ts.readLine().trimmed();
-        pairs.push_back({code.toInt(), val});
-    }
-    bool inEntities = false;
+namespace {
+// AutoCAD Colour Index: the first ten, then a fair approximation of the rest from its hue wheel.
+QColor aciColor(int i) {
+    static const QColor base[10] = {QColor(0, 0, 0), QColor(255, 0, 0), QColor(255, 255, 0), QColor(0, 255, 0), QColor(0, 255, 255),
+                                    QColor(0, 0, 255), QColor(255, 0, 255), QColor(128, 128, 128), QColor(128, 128, 128), QColor(192, 192, 192)};
+    i = std::abs(i);
+    if (i < 10) return base[i];
+    if (i >= 250) { int g = 51 + (i - 250) * 40; return QColor(g, g, g); }
+    int hue = ((i - 10) / 10) * 15, shade = (i - 10) % 10;
+    return QColor::fromHsv(hue % 360, shade % 2 ? 128 : 255, 255 - (shade / 2) * 40);
+}
+
+// One DXF entity: its type and its group codes in file order (order matters for vertices).
+struct DxfEnt {
+    QString type;
+    std::vector<std::pair<int, QString>> g;
+    double num(int c, double def = 0) const { for (auto& x : g) if (x.first == c) return x.second.toDouble(); return def; }
+    QString str(int c) const { for (auto& x : g) if (x.first == c) return x.second; return QString(); }
+    bool has(int c) const { for (auto& x : g) if (x.first == c) return true; return false; }
+};
+
+struct DxfReader {
+    Model& m;
+    const ImportOptions& opt;
+    double scale = 1;
+    std::map<QString, int> layerTag;              // layer name -> tag
+    std::map<QString, std::vector<DxfEnt>> blocks;
+    std::map<QString, Vec3> blockBase;
+    std::map<QString, int> blockDef;              // block name -> definition (made when first used)
     std::set<std::vector<int>> seen;
-    size_t i = 0;
-    auto readEntity = [&](size_t& j) {
-        std::multimap<int, QString> g;
-        ++j;
-        while (j < pairs.size() && pairs[j].first != 0) { g.insert({pairs[j].first, pairs[j].second}); ++j; }
-        return g;
-    };
-    auto num = [](const std::multimap<int, QString>& g, int c, double def = 0) {
-        auto it = g.find(c);
-        return it == g.end() ? def : it->second.toDouble();
-    };
-    std::vector<int> created;
-    while (i < pairs.size()) {
-        auto& [c, v] = pairs[i];
-        if (c == 2 && v == "ENTITIES") { inEntities = true; ++i; continue; }
-        if (c == 0 && v == "ENDSEC") { inEntities = false; ++i; continue; }
-        if (!inEntities || c != 0) { ++i; continue; }
-        QString type = v;
-        if (type == "LINE") {
-            auto g = readEntity(i);
-            Vec3 a = inP(Vec3(num(g, 10), num(g, 20), num(g, 30)), opt), b = inP(Vec3(num(g, 11), num(g, 21), num(g, 31)), opt);
-            auto p = geom::insertSegment(E, a, b, &created);
-        } else if (type == "CIRCLE" || type == "ARC") {
-            auto g = readEntity(i);
-            Vec3 c0 = inP(Vec3(num(g, 10), num(g, 20), num(g, 30)), opt);
-            double r = num(g, 40) * opt.scale;
-            double a0 = type == "ARC" ? num(g, 50) * kPi / 180 : 0, a1 = type == "ARC" ? num(g, 51) * kPi / 180 : 2 * kPi;
-            if (a1 <= a0) a1 += 2 * kPi;
-            int segs = std::max(6, (int)std::ceil(24 * (a1 - a0) / (2 * kPi)));
-            std::vector<Vec3> pts;
-            bool closed = type == "CIRCLE";
-            int n = closed ? segs : segs + 1;
-            for (int k = 0; k < n; ++k) {
-                double a = a0 + (a1 - a0) * k / segs;
-                pts.push_back(c0 + Vec3(std::cos(a), std::sin(a), 0) * r);
-            }
-            Curve cv;
-            cv.isArc = true; cv.closed = closed; cv.center = c0; cv.radius = r; cv.startAng = a0; cv.endAng = a1; cv.segments = segs;
-            geom::addPolyline(E, pts, closed, &cv);
-        } else if (type == "LWPOLYLINE") {
-            auto g = readEntity(i);
-            std::vector<double> xs, ys;
-            for (auto it = g.begin(); it != g.end(); ++it) {
-                if (it->first == 10) xs.push_back(it->second.toDouble());
-                if (it->first == 20) ys.push_back(it->second.toDouble());
-            }
-            bool closed = ((int)num(g, 70) & 1) != 0;
-            double z = num(g, 38);
-            std::vector<Vec3> pts;
-            for (size_t k = 0; k < std::min(xs.size(), ys.size()); ++k) pts.push_back(inP(Vec3(xs[k], ys[k], z), opt));
-            geom::addPolyline(E, pts, closed);
-        } else if (type == "POLYLINE") {
-            auto g = readEntity(i);
-            bool closed = ((int)num(g, 70) & 1) != 0;
-            std::vector<Vec3> pts;
-            while (i < pairs.size() && pairs[i].first == 0 && pairs[i].second == "VERTEX") {
-                auto vg = readEntity(i);
-                pts.push_back(inP(Vec3(num(vg, 10), num(vg, 20), num(vg, 30)), opt));
-            }
-            if (i < pairs.size() && pairs[i].second == "SEQEND") readEntity(i);
-            geom::addPolyline(E, pts, closed);
-        } else if (type == "3DFACE") {
-            auto g = readEntity(i);
-            std::vector<Vec3> pts;
-            for (int k = 0; k < 4; ++k) pts.push_back(inP(Vec3(num(g, 10 + k), num(g, 20 + k), num(g, 30 + k)), opt));
-            if (pts[3].near(pts[2])) pts.pop_back();
-            addPolyFace(E, pts, -1, seen);
-        } else {
-            readEntity(i);
+    QStringList notes;
+    int depth = 0;
+
+    DxfReader(Model& mm, const ImportOptions& o) : m(mm), opt(o) {}
+
+    Vec3 P(double x, double y, double z) const {
+        Vec3 p(x * scale, y * scale, z * scale);
+        if (opt.swapYZ) p = Vec3(p.x, -p.z, p.y);
+        return p;
+    }
+    // the entity's own coordinate system (OCS) from its extrusion direction, by AutoCAD's rule
+    static Mat4 ocs(const DxfEnt& e) {
+        Vec3 n(e.num(210, 0), e.num(220, 0), e.num(230, 1));
+        if (n.length() < 1e-12) return Mat4();
+        n = n.normalized();
+        if (std::fabs(n.z - 1) < 1e-12) return Mat4();
+        Vec3 ax = (std::fabs(n.x) < 1.0 / 64 && std::fabs(n.y) < 1.0 / 64) ? Vec3(0, 1, 0).cross(n) : Vec3(0, 0, 1).cross(n);
+        ax = ax.normalized();
+        Vec3 ay = n.cross(ax).normalized();
+        return Mat4::fromAxes(Vec3(), ax, ay, n);
+    }
+    int tagFor(const DxfEnt& e) {
+        QString l = e.str(8);
+        if (l.isEmpty() || l == "0") return 0;
+        auto it = layerTag.find(l);
+        if (it != layerTag.end()) return it->second;
+        Tag t; t.name = l; m.tags.push_back(t);
+        return layerTag[l] = (int)m.tags.size() - 1;
+    }
+    void tagEdges(Entities& E, const std::vector<int>& es, int tag) { if (tag) for (int x : es) if (x >= 0 && E.edges[x].alive) E.edges[x].tag = tag; }
+    void poly(Entities& E, std::vector<Vec3> pts, bool closed, int tag, const Curve* cv = nullptr) {
+        std::vector<Vec3> r;
+        for (auto& q : pts) if (r.empty() || !r.back().near(q)) r.push_back(q);
+        if (closed && r.size() > 2 && r.front().near(r.back())) r.pop_back();
+        if (r.size() < 2) return;
+        if (r.size() == 2) closed = false;
+        auto es = geom::addPolyline(E, r, closed, cv);
+        tagEdges(E, es, tag);
+    }
+    // an arc through bulge b from p to q (in the polyline's plane, OCS coordinates)
+    static void bulgeArc(std::vector<Vec3>& out, const Vec3& p, const Vec3& q, double b) {
+        double ang = 4 * std::atan(b);
+        Vec3 d = q - p;
+        double c = d.length();
+        if (c < 1e-12 || std::fabs(b) < 1e-9) return;
+        double r = c / (2 * std::sin(std::fabs(ang) / 2));
+        Vec3 mid = (p + q) * 0.5, perp(-d.y / c, d.x / c, 0);
+        double h = std::sqrt(std::max(0.0, r * r - c * c / 4));
+        Vec3 ctr = mid + perp * (b > 0 ? (std::fabs(ang) > kPi ? -h : h) : (std::fabs(ang) > kPi ? h : -h));
+        double a0 = std::atan2(p.y - ctr.y, p.x - ctr.x);
+        int segs = std::max(2, (int)std::ceil(24 * std::fabs(ang) / (2 * kPi)));
+        for (int k = 1; k < segs; ++k) {
+            double a = a0 + ang * k / segs;
+            out.push_back(Vec3(ctr.x + r * std::cos(a), ctr.y + r * std::sin(a), p.z));
         }
     }
-    geom::findFaces(E, created);
+
+    void entities(Entities& E, const std::vector<DxfEnt>& list, std::vector<int>& lines) {
+        for (size_t i = 0; i < list.size(); ++i) {
+            const DxfEnt& e = list[i];
+            const QString& t = e.type;
+            int tag = tagFor(e);
+            if (t == "LINE") {
+                auto es = geom::insertSegment(E, P(e.num(10), e.num(20), e.num(30)), P(e.num(11), e.num(21), e.num(31)), &lines);
+                tagEdges(E, es, tag);
+            } else if (t == "CIRCLE" || t == "ARC") {
+                Mat4 o = ocs(e);
+                double r = e.num(40);
+                double a0 = t == "ARC" ? e.num(50) * kPi / 180 : 0, a1 = t == "ARC" ? e.num(51) * kPi / 180 : 2 * kPi;
+                if (a1 <= a0) a1 += 2 * kPi;
+                int segs = std::max(6, (int)std::ceil(24 * (a1 - a0) / (2 * kPi)));
+                bool closed = t == "CIRCLE";
+                std::vector<Vec3> pts;
+                for (int k = 0; k < (closed ? segs : segs + 1); ++k) {
+                    double a = a0 + (a1 - a0) * k / segs;
+                    Vec3 w = o.point(Vec3(e.num(10) + r * std::cos(a), e.num(20) + r * std::sin(a), e.num(30)));
+                    pts.push_back(P(w.x, w.y, w.z));
+                }
+                Curve cv;
+                cv.isArc = true; cv.closed = closed; cv.radius = r * scale; cv.startAng = a0; cv.endAng = a1; cv.segments = segs;
+                Vec3 c = o.point(Vec3(e.num(10), e.num(20), e.num(30)));
+                cv.center = P(c.x, c.y, c.z);
+                cv.normal = o.vector(Vec3(0, 0, 1));
+                poly(E, pts, closed, tag, &cv);
+            } else if (t == "LWPOLYLINE") {
+                Mat4 o = ocs(e);
+                double elev = e.num(38);
+                std::vector<Vec3> v;
+                std::vector<double> bulge;
+                for (auto& [c, val] : e.g) {
+                    if (c == 10) { v.push_back(Vec3(val.toDouble(), 0, elev)); bulge.push_back(0); }
+                    else if (c == 20 && !v.empty()) v.back().y = val.toDouble();
+                    else if (c == 42 && !bulge.empty()) bulge.back() = val.toDouble();
+                }
+                bool closed = ((int)e.num(70) & 1) != 0;
+                std::vector<Vec3> pts;
+                for (size_t k = 0; k < v.size(); ++k) {
+                    pts.push_back(v[k]);
+                    if (k + 1 < v.size() || closed) bulgeArc(pts, v[k], v[(k + 1) % v.size()], bulge[k]);
+                }
+                for (auto& q : pts) { Vec3 w = o.point(q); q = P(w.x, w.y, w.z); }
+                poly(E, pts, closed, tag);
+            } else if (t == "POLYLINE") {
+                int flags = (int)e.num(70);
+                std::vector<DxfEnt> verts;
+                while (i + 1 < list.size() && list[i + 1].type == "VERTEX") verts.push_back(list[++i]);
+                if (i + 1 < list.size() && list[i + 1].type == "SEQEND") ++i;
+                if (flags & 64) {   // polyface mesh: vertices, then face records of 1-based indices
+                    std::vector<Vec3> pv;
+                    for (auto& vx : verts) if (((int)vx.num(70) & 128) == 0 || ((int)vx.num(70) & 64)) pv.push_back(P(vx.num(10), vx.num(20), vx.num(30)));
+                    for (auto& vx : verts) {
+                        if (((int)vx.num(70) & 128) == 0 || ((int)vx.num(70) & 64)) continue;
+                        std::vector<Vec3> fp;
+                        for (int c : {71, 72, 73, 74}) {
+                            int k = std::abs((int)vx.num(c, 0));
+                            if (k >= 1 && k <= (int)pv.size()) fp.push_back(pv[k - 1]);
+                        }
+                        int f = addPolyFace(E, fp, -1, seen);
+                        if (f >= 0 && tag) E.faces[f].tag = tag;
+                    }
+                } else if (flags & 16) {   // polygon mesh: an M x N grid of vertices
+                    int M = (int)e.num(71), N = (int)e.num(72);
+                    std::vector<Vec3> pv;
+                    for (auto& vx : verts) pv.push_back(P(vx.num(10), vx.num(20), vx.num(30)));
+                    if (M * N == (int)pv.size())
+                        for (int a = 0; a + 1 < M; ++a)
+                            for (int b = 0; b + 1 < N; ++b) {
+                                int f = addPolyFace(E, {pv[a * N + b], pv[a * N + b + 1], pv[(a + 1) * N + b + 1], pv[(a + 1) * N + b]}, -1, seen);
+                                if (f >= 0 && tag) E.faces[f].tag = tag;
+                            }
+                } else {
+                    bool closed = flags & 1, threeD = flags & 8;
+                    Mat4 o = threeD ? Mat4() : ocs(e);
+                    std::vector<Vec3> pts;
+                    for (size_t k = 0; k < verts.size(); ++k) {
+                        Vec3 a(verts[k].num(10), verts[k].num(20), threeD ? verts[k].num(30) : e.num(30));
+                        pts.push_back(a);
+                        if (!threeD && (k + 1 < verts.size() || closed)) {
+                            const DxfEnt& nx = verts[(k + 1) % verts.size()];
+                            bulgeArc(pts, a, Vec3(nx.num(10), nx.num(20), e.num(30)), verts[k].num(42));
+                        }
+                    }
+                    for (auto& q : pts) { Vec3 w = o.point(q); q = P(w.x, w.y, w.z); }
+                    poly(E, pts, closed, tag);
+                }
+            } else if (t == "3DFACE" || t == "SOLID" || t == "TRACE") {
+                std::vector<Vec3> pts;
+                Mat4 o = t == "3DFACE" ? Mat4() : ocs(e);
+                for (int k = 0; k < 4; ++k) { Vec3 w = o.point(Vec3(e.num(10 + k), e.num(20 + k), e.num(30 + k, e.num(30)))); pts.push_back(P(w.x, w.y, w.z)); }
+                if (t != "3DFACE") std::swap(pts[2], pts[3]);   // SOLID corners run 1, 2, 4, 3
+                if (pts[3].near(pts[2]) || pts[3].near(pts[0])) pts.pop_back();
+                int f = addPolyFace(E, pts, -1, seen);
+                if (f >= 0 && tag) { E.faces[f].tag = tag; for (int x : E.faceEdges(f)) E.edges[x].tag = tag; }
+            } else if (t == "ELLIPSE") {
+                Vec3 c(e.num(10), e.num(20), e.num(30)), M(e.num(11), e.num(21), e.num(31));
+                Vec3 n(e.num(210, 0), e.num(220, 0), e.num(230, 1));
+                Vec3 mn = n.normalized().cross(M) * e.num(40, 1);
+                double t0 = e.num(41, 0), t1 = e.num(42, 2 * kPi);
+                if (t1 <= t0) t1 += 2 * kPi;
+                bool closed = std::fabs(t1 - t0 - 2 * kPi) < 1e-6;
+                int segs = std::max(8, (int)std::ceil(32 * (t1 - t0) / (2 * kPi)));
+                std::vector<Vec3> pts;
+                for (int k = 0; k < (closed ? segs : segs + 1); ++k) {
+                    double a = t0 + (t1 - t0) * k / segs;
+                    Vec3 w = c + M * std::cos(a) + mn * std::sin(a);
+                    pts.push_back(P(w.x, w.y, w.z));
+                }
+                poly(E, pts, closed, tag);
+            } else if (t == "SPLINE") {
+                int deg = (int)e.num(71, 3);
+                std::vector<double> knots, weights;
+                std::vector<Vec3> ctrl, fit;
+                for (auto& [c, val] : e.g) {
+                    if (c == 40) knots.push_back(val.toDouble());
+                    else if (c == 41) weights.push_back(val.toDouble());
+                    else if (c == 10) ctrl.push_back(Vec3(val.toDouble(), 0, 0));
+                    else if (c == 20 && !ctrl.empty()) ctrl.back().y = val.toDouble();
+                    else if (c == 30 && !ctrl.empty()) ctrl.back().z = val.toDouble();
+                    else if (c == 11) fit.push_back(Vec3(val.toDouble(), 0, 0));
+                    else if (c == 21 && !fit.empty()) fit.back().y = val.toDouble();
+                    else if (c == 31 && !fit.empty()) fit.back().z = val.toDouble();
+                }
+                std::vector<Vec3> pts;
+                int nc = (int)ctrl.size();
+                if (nc > deg && (int)knots.size() == nc + deg + 1) {
+                    if ((int)weights.size() != nc) weights.assign(nc, 1.0);
+                    double u0 = knots[deg], u1 = knots[nc];
+                    int samples = std::max(16, nc * 8);
+                    for (int s2 = 0; s2 <= samples; ++s2) {
+                        double u = u0 + (u1 - u0) * s2 / samples;
+                        int k = deg;
+                        while (k < nc - 1 && u >= knots[k + 1]) ++k;
+                        std::vector<Vec3> d(deg + 1);
+                        std::vector<double> w(deg + 1);
+                        for (int j = 0; j <= deg; ++j) { w[j] = weights[k - deg + j]; d[j] = ctrl[k - deg + j] * w[j]; }
+                        for (int r = 1; r <= deg; ++r)
+                            for (int j = deg; j >= r; --j) {
+                                int ii = k - deg + j;
+                                double den = knots[ii + deg - r + 1] - knots[ii];
+                                double al = den > 1e-12 ? (u - knots[ii]) / den : 0;
+                                d[j] = d[j - 1] * (1 - al) + d[j] * al;
+                                w[j] = w[j - 1] * (1 - al) + w[j] * al;
+                            }
+                        Vec3 q = w[deg] != 0 ? d[deg] / w[deg] : d[deg];
+                        pts.push_back(P(q.x, q.y, q.z));
+                    }
+                } else if (fit.size() >= 2) {
+                    for (auto& q : fit) pts.push_back(P(q.x, q.y, q.z));
+                }
+                poly(E, pts, ((int)e.num(70) & 1) != 0, tag);
+            } else if (t == "TEXT" || t == "MTEXT") {
+                QString s = e.str(1);
+                for (auto& [c, val] : e.g) if (c == 3) s = val + s;   // MTEXT: long text in 3s, then 1
+                if (t == "MTEXT") {
+                    s.replace("\\P", "\n");
+                    s.remove(QRegularExpression(R"(\\[A-Za-z][^;]*;|[{}])"));
+                }
+                if (s.trimmed().isEmpty()) continue;
+                Mat4 o = t == "TEXT" ? ocs(e) : Mat4();
+                Vec3 w = o.point(Vec3(e.num(10), e.num(20), e.num(30)));
+                Text tx;
+                tx.anchor = P(w.x, w.y, w.z);
+                tx.text = s;
+                tx.tag = tag;
+                E.texts.push_back(tx);
+            } else if (t == "POINT") {
+                Guide g;
+                g.isPoint = true;
+                g.p = P(e.num(10), e.num(20), e.num(30));
+                g.tag = tag;
+                E.guides.push_back(g);
+            } else if (t == "INSERT") {
+                QString name = e.str(2);
+                if (!blocks.count(name) || depth > 16) continue;
+                int def = defOf(name);
+                if (def < 0) continue;
+                Mat4 o = ocs(e);
+                Vec3 ins = o.point(Vec3(e.num(10), e.num(20), e.num(30)));
+                Vec3 base = blockBase[name];
+                Mat4 xf = Mat4::translation(P(ins.x, ins.y, ins.z)) * Mat4::fromAxes(Vec3(), o.axis(0), o.axis(1), o.axis(2)) *
+                          Mat4::rotation(Vec3(0, 0, 1), e.num(50) * kPi / 180) *
+                          Mat4::scaling(Vec3(e.num(41, 1), e.num(42, 1), e.num(43, 1))) * Mat4::translation(-P(base.x, base.y, base.z));
+                int cols = std::max(1, (int)e.num(70, 1)), rows = std::max(1, (int)e.num(71, 1));
+                for (int r = 0; r < rows; ++r)
+                    for (int c = 0; c < cols; ++c) {
+                        Instance in;
+                        in.def = def;
+                        in.xf = Mat4::translation(P(c * e.num(44), r * e.num(45), 0)) * xf;
+                        in.tag = tag;
+                        in.name = QString();
+                        E.insts.push_back(in);
+                    }
+            }
+        }
+    }
+    // a block becomes a component the first time it's placed; its own geometry is in block units
+    int defOf(const QString& name) {
+        auto it = blockDef.find(name);
+        if (it != blockDef.end()) return it->second;
+        blockDef[name] = -1;   // guards against a block that places itself
+        Entities local;
+        std::vector<int> lines;
+        ++depth;
+        entities(local, blocks[name], lines);
+        --depth;
+        finishFaces(local, lines);
+        int def = m.addDef(name, false);
+        m.defs[def].ents = std::move(local);
+        blockDef[name] = def;
+        return def;
+    }
+    void finishFaces(Entities& E, const std::vector<int>& lines) {
+        // faces from closed outlines of lines and polylines, but not over the file's own faces
+        std::vector<int> loose;
+        for (int x : lines) if (x >= 0 && x < (int)E.edges.size() && E.edges[x].alive && E.edges[x].faces.empty()) loose.push_back(x);
+        geom::findFaces(E, loose);
+    }
+};
+}  // namespace
+
+static bool importDXF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) { if (err) *err = "Cannot open file."; return false; }
+    QByteArray raw = f.readAll();
+    QString text = QString::fromUtf8(raw);
+    if (text.contains(QChar::ReplacementCharacter)) text = QString::fromLatin1(raw);   // older files are ANSI
+    QStringList lines = text.split('\n');
+    std::vector<std::pair<int, QString>> pairs;
+    for (int i = 0; i + 1 < lines.size(); i += 2) {
+        bool ok = false;
+        int code = lines[i].trimmed().toInt(&ok);
+        if (!ok) { if (err) *err = "This isn't a DXF file (or it is the binary kind)."; return false; }
+        pairs.push_back({code, lines[i + 1].trimmed()});
+    }
+    if (pairs.empty()) { if (err) *err = "The DXF file is empty."; return false; }
+    DxfReader rd(m, opt);
+    rd.scale = opt.scale;
+    std::vector<DxfEnt> modelEnts;
+    QString section, curBlock;
+    std::vector<DxfEnt>* into = nullptr;
+    for (size_t i = 0; i < pairs.size(); ++i) {
+        auto& [c, v] = pairs[i];
+        if (c == 0 && v == "SECTION" && i + 1 < pairs.size()) { section = pairs[i + 1].second; ++i; into = section == "ENTITIES" ? &modelEnts : nullptr; continue; }
+        if (c == 0 && v == "ENDSEC") { section.clear(); into = nullptr; continue; }
+        if (section == "HEADER" && c == 9 && v == "$INSUNITS" && i + 1 < pairs.size()) {
+            // the file's own units win over the choice in the import options
+            static const std::map<int, double> u = {{1, 25.4}, {2, 304.8}, {3, 1609344}, {4, 1}, {5, 10}, {6, 1000}, {7, 1e6}, {8, 25.4e-6}, {9, 0.0254}, {10, 914.4}, {14, 100}};
+            auto it = u.find(pairs[i + 1].second.toInt());
+            if (it != u.end()) rd.scale = it->second;
+            ++i;
+            continue;
+        }
+        if (section == "TABLES" && c == 0 && v == "LAYER") {
+            DxfEnt L;
+            size_t j = i + 1;
+            for (; j < pairs.size() && pairs[j].first != 0; ++j) L.g.push_back(pairs[j]);
+            QString name = L.str(2);
+            if (!name.isEmpty() && name != "0" && !rd.layerTag.count(name)) {
+                Tag t;
+                t.name = name;
+                int col = (int)L.num(62, 7);
+                t.visible = col >= 0 && !((int)L.num(70) & 1);   // off (negative colour) or frozen
+                t.color = aciColor(col == 7 ? 8 : col);
+                m.tags.push_back(t);
+                rd.layerTag[name] = (int)m.tags.size() - 1;
+            }
+            i = j - 1;
+            continue;
+        }
+        if (section == "BLOCKS" && c == 0) {
+            if (v == "BLOCK") {
+                DxfEnt B;
+                size_t j = i + 1;
+                for (; j < pairs.size() && pairs[j].first != 0; ++j) B.g.push_back(pairs[j]);
+                curBlock = B.str(2);
+                rd.blockBase[curBlock] = Vec3(B.num(10), B.num(20), B.num(30));
+                into = curBlock.startsWith('*') ? nullptr : &rd.blocks[curBlock];   // *Model_Space, *Paper_Space
+                i = j - 1;
+                continue;
+            }
+            if (v == "ENDBLK") { into = nullptr; curBlock.clear(); continue; }
+        }
+        if (c == 0 && into) {
+            DxfEnt e;
+            e.type = v;
+            size_t j = i + 1;
+            for (; j < pairs.size() && pairs[j].first != 0; ++j) e.g.push_back(pairs[j]);
+            into->push_back(std::move(e));
+            i = j - 1;
+        }
+    }
+    std::vector<int> created;
+    rd.entities(E, modelEnts, created);
+    rd.finishFaces(E, created);
+    cleanupImportedMesh(E, opt);   // 3D faces exported as triangles join up again
     return true;
 }
 
@@ -562,23 +972,51 @@ static bool exportDXF(const Model& m, const QString& path, const ExportOptions& 
     std::vector<WorldTri> tris;
     std::vector<WorldEdge> edges;
     collectWorld(m, tris, &edges, true, sel);
-    QFile f(path);
+    QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) { if (err) *err = "Cannot write file."; return false; }
     QTextStream ts(&f);
-    ts << "0\nSECTION\n2\nENTITIES\n";
-    for (auto& e : edges) {
-        Vec3 a = outP(e.a, opt), b = outP(e.b, opt);
-        ts << "0\nLINE\n8\n0\n10\n" << a.x << "\n20\n" << a.y << "\n30\n" << a.z << "\n11\n" << b.x << "\n21\n" << b.y << "\n31\n" << b.z << "\n";
+    ts.setRealNumberNotation(QTextStream::SmartNotation);
+    ts.setRealNumberPrecision(12);
+    // the units the coordinates are in, so CAD programs place it at the right size
+    int insunits = opt.scale == 1 ? 4 : opt.scale == 10 ? 5 : opt.scale == 1000 ? 6 : opt.scale == 25.4 ? 1 : opt.scale == 304.8 ? 2 : 0;
+    ts << "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n" << insunits << "\n0\nENDSEC\n";
+    auto layerName = [&](int tag) {
+        if (tag <= 0 || tag >= (int)m.tags.size()) return QString("0");
+        QString n = m.tags[tag].name;
+        n.replace(QRegularExpression(R"([<>/\\":;?*|=,`])"), "_");
+        return n.isEmpty() ? QString("0") : n;
+    };
+    // one layer per tag, coloured like the tag
+    ts << "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLAYER\n70\n" << (int)m.tags.size() << "\n";
+    ts << "0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS\n";
+    for (int t = 1; t < (int)m.tags.size(); ++t) {
+        const QColor& c = m.tags[t].color;
+        int best = 7, bd = INT_MAX;   // nearest of the basic AutoCAD colours
+        for (int k = 1; k < 10; ++k) {
+            QColor a = aciColor(k);
+            int d = (a.red() - c.red()) * (a.red() - c.red()) + (a.green() - c.green()) * (a.green() - c.green()) + (a.blue() - c.blue()) * (a.blue() - c.blue());
+            if (d < bd) { bd = d; best = k; }
+        }
+        ts << "0\nLAYER\n2\n" << layerName(t) << "\n70\n0\n62\n" << (m.tags[t].visible ? best : -best) << "\n6\nCONTINUOUS\n";
     }
+    ts << "0\nENDTAB\n0\nENDSEC\n";
+    ts << "0\nSECTION\n2\nENTITIES\n";
+    if (opt.exportEdges)
+        for (auto& e : edges) {
+            Vec3 a = outP(e.a, opt), b = outP(e.b, opt);
+            ts << "0\nLINE\n8\n" << layerName(e.tag) << "\n10\n" << a.x << "\n20\n" << a.y << "\n30\n" << a.z << "\n11\n" << b.x << "\n21\n" << b.y << "\n31\n" << b.z << "\n";
+        }
     if (opt.triangulate)
         for (auto& t : tris) {
-            ts << "0\n3DFACE\n8\n0\n";
+            ts << "0\n3DFACE\n8\n" << layerName(t.tag) << "\n";
             for (int k = 0; k < 4; ++k) {
                 Vec3 p = outP(t.p[std::min(k, 2)], opt);
                 ts << (10 + k) << "\n" << p.x << "\n" << (20 + k) << "\n" << p.y << "\n" << (30 + k) << "\n" << p.z << "\n";
             }
         }
     ts << "0\nENDSEC\n0\nEOF\n";
+    ts.flush();
+    if (!f.commit()) { if (err) *err = "Cannot write file."; return false; }
     return true;
 }
 
@@ -595,6 +1033,7 @@ struct DaeCtx {
     std::map<QString, int> matIds;
     std::map<QString, int> geomDefs;
     ImportOptions opt;
+    Entities* root = nullptr;   // where top-level nodes go (not inside m->defs)
 };
 
 std::vector<double> floats(const QString& s) {
@@ -777,7 +1216,9 @@ Mat4 daeNodeTransform(const QDomElement& node) {
     return m;
 }
 
-void daeNode(DaeCtx& c, const QDomElement& node, Entities& parent, int depth) {
+// parentDef: the definition the node's instance goes into, or -1 for c.root. Definitions are
+// looked up by index after every addDef, because adding one can move them all in memory.
+void daeNode(DaeCtx& c, const QDomElement& node, int parentDef, int depth) {
     if (depth > 64) return;
     Mat4 xf = daeNodeTransform(node);
     // Children are collected into a definition for this node (if it has content).
@@ -799,20 +1240,20 @@ void daeNode(DaeCtx& c, const QDomElement& node, Entities& parent, int depth) {
                 // explode geometry directly into node def for single use; else instance
                 Instance in;
                 in.def = gd;
-                c.m->defs[def].ents.insts.push_back(in);
+                c.m->defs[def].ents.insts.push_back(in);   // looked up after daeGeometryDef's addDef
             }
         } else if (ch.tagName() == "node") {
-            daeNode(c, ch, c.m->defs[def].ents, depth + 1);
+            daeNode(c, ch, def, depth + 1);
         } else if (ch.tagName() == "instance_node") {
             auto ni = c.nodes.find(refId(ch.attribute("url")));
-            if (ni != c.nodes.end()) daeNode(c, ni->second, c.m->defs[def].ents, depth + 1);
+            if (ni != c.nodes.end()) daeNode(c, ni->second, def, depth + 1);
         }
     }
     Instance in;
     in.def = def;
     in.xf = xf;
     in.name = node.attribute("name");
-    parent.insts.push_back(in);
+    (parentDef < 0 ? *c.root : c.m->defs[parentDef].ents).insts.push_back(in);
 }
 }  // namespace
 
@@ -823,6 +1264,7 @@ static bool importDAE(Model& m, Entities& E, const QString& path, const ImportOp
     c.m = &m;
     c.dir = QFileInfo(path).dir();
     c.opt = opt;
+    c.root = &E;
     if (!c.doc.setContent(&f)) { if (err) *err = "Invalid COLLADA XML."; return false; }
     QDomElement root = c.doc.documentElement();
     QDomElement asset = root.firstChildElement("asset");
@@ -847,7 +1289,7 @@ static bool importDAE(Model& m, Entities& E, const QString& path, const ImportOp
     Mat4 rootXf = Mat4::scaling(Vec3(c.unit, c.unit, c.unit) * opt.scale);
     if (!c.zUp && up == "Y_UP") rootXf = rootXf * Mat4::rotation(Vec3(1, 0, 0), kPi / 2);
     size_t before = E.insts.size();
-    for (QDomElement n = vs.firstChildElement("node"); !n.isNull(); n = n.nextSiblingElement("node")) daeNode(c, n, E, 0);
+    for (QDomElement n = vs.firstChildElement("node"); !n.isNull(); n = n.nextSiblingElement("node")) daeNode(c, n, -1, 0);
     for (size_t i = before; i < E.insts.size(); ++i) E.insts[i].xf = rootXf * E.insts[i].xf;
     E.touch();
     return true;
@@ -1280,7 +1722,7 @@ int importDAEInto(Model& m, Entities& target, const QString& path, const ImportO
 bool importGLTF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
 bool import3MF(Model& m, Entities& E, const QString& path, const ImportOptions& opt, QString* err);
 
-int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
+static int importFileImpl(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
     QString ext = QFileInfo(path).suffix().toLower();
     QString name = QFileInfo(path).completeBaseName();
     g_importNotes.clear();
@@ -1344,6 +1786,22 @@ int importFile(Model& m, Entities& target, const QString& path, const ImportOpti
     target.insts.push_back(in);
     target.touch();
     return (int)target.insts.size() - 1;
+}
+
+// The target may be a definition's entities (importing while a group is open). Importers add
+// definitions, which can move every definition in memory, so the import goes into a local
+// Entities first and the target is found again by index afterwards.
+int importFile(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err) {
+    int targetDef = -1;
+    for (size_t d = 0; d < m.defs.size(); ++d)
+        if (&m.defs[d].ents == &target) { targetDef = (int)d; break; }
+    Entities local;
+    int r = importFileImpl(m, local, path, opt, err);
+    if (r < 0) return -1;
+    Entities& T = targetDef < 0 ? target : m.defs[targetDef].ents;
+    T.insts.push_back(local.insts[r]);
+    T.touch();
+    return (int)T.insts.size() - 1;
 }
 
 bool export3DS(const Model& m, const QString& path, const ExportOptions& opt, QString* err, const std::vector<EntRef>* sel);

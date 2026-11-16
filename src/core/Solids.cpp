@@ -151,12 +151,37 @@ void splitAgainst(Entities& A, const Entities& B) {
             segs.insert(segs.end(), s.begin(), s.end());
         }
     }
+    Entities before = A;
     std::vector<int> pieces;
     for (auto& s : segs) {
         auto p = geom::insertSegment(A, s.first, s.second);
         pieces.insert(pieces.end(), p.begin(), p.end());
     }
     geom::findFaces(A, pieces);
+    // The cut lines can close a loop that runs across the inside of the solid (where another
+    // solid enters it); finding faces then spans a membrane over that loop. Only pieces of
+    // the solid's own surface belong here.
+    for (int f = 0; f < (int)A.faces.size(); ++f) {
+        if (!A.faces[f].alive) continue;
+        std::vector<Vec3> tris;
+        geom::faceTriangles(A, f, tris);
+        if (tris.size() < 3) continue;
+        size_t best = 0;
+        double ba = -1;
+        for (size_t i = 0; i + 2 < tris.size(); i += 3) {
+            double a = (tris[i + 1] - tris[i]).cross(tris[i + 2] - tris[i]).length();
+            if (a > ba) { ba = a; best = i; }
+        }
+        Vec3 c = (tris[best] + tris[best + 1] + tris[best + 2]) / 3.0;
+        bool onSurface = false;
+        for (int g = 0; g < (int)before.faces.size() && !onSurface; ++g) {
+            const Face& G = before.faces[g];
+            if (!G.alive || std::fabs(std::fabs(G.plane.n.dot(A.faces[f].plane.n)) - 1) > 1e-6) continue;
+            if (std::fabs(G.plane.dist(c)) > 0.01) continue;
+            onSurface = before.pointInFace(g, G.plane.project(c), kTol);
+        }
+        if (!onSurface) A.removeFace(f);
+    }
 }
 
 void addFaceCopy(Entities& R, const Entities& S, int f, bool flip) {
@@ -206,7 +231,13 @@ void finishResult(Entities& R) {
 }
 }  // namespace
 
-bool solidOperation(Model& m, Entities& ctx, int first, int second, SolidOp op, QString* err, std::vector<int>* resultInsts) {
+bool solidOperation(Model& m, Entities& ctxIn, int first, int second, SolidOp op, QString* err, std::vector<int>* resultInsts) {
+    // ctxIn may be a definition's entities (a group open for editing); addDef below can move
+    // the definitions, so it is found again by index
+    int ctxDef = -1;
+    for (size_t d = 0; d < m.defs.size(); ++d) if (&m.defs[d].ents == &ctxIn) { ctxDef = (int)d; break; }
+    auto ctxRef = [&]() -> Entities& { return ctxDef < 0 ? ctxIn : m.defs[ctxDef].ents; };
+    Entities& ctx = ctxIn;
     if (first < 0 || second < 0 || first == second) { if (err) *err = "Select two different groups or components."; return false; }
     Instance IA = ctx.insts[first], IB = ctx.insts[second];
     Entities A, B;
@@ -278,10 +309,12 @@ bool solidOperation(Model& m, Entities& ctx, int first, int second, SolidOp op, 
         in.xf = t.xf;
         in.tag = t.tag;
         in.name = t.name;
-        ctx.insts.push_back(in);
-        if (resultInsts) resultInsts->push_back((int)ctx.insts.size() - 1);
+        ctxRef().insts.push_back(in);
+        if (resultInsts) resultInsts->push_back((int)ctxRef().insts.size() - 1);
     }
-    ctx.touch();
+    ctxRef().touch();
+    // the groups the result replaced are dropped when the change is committed (Document), not
+    // here: an importer cutting openings holds groups nothing in the model places yet
     return true;
 }
 

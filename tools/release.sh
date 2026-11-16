@@ -1,8 +1,8 @@
 #!/bin/bash
 # Folio Gable release checks: unit tests, the click-everything audit and desktop-theme runs (source build),
-# deb, the same on the installed package in jammy and nolo. Display :96; full audit under the heavy lock; Wayland desktop-theme pass on 24.04.
+# deb, the same on the installed package in jammy and nolo. Display :96; full audit under the heavy lock; Wayland quick audit and desktop-theme pass on 24.04.
 set -u
-R=/home/claude/gable
+R="$(cd "$(dirname "$0")/.." && pwd)"   # this repository, wherever it is checked out (G7-32)
 V=$(grep -oP 'project\(Gable VERSION \K[0-9.]+' $R/CMakeLists.txt)
 /home/claude/mounts.sh
 pgrep -f "Xvfb :96" >/dev/null || { rm -f /tmp/.X96-lock /tmp/.X11-unix/X96; setsid -f Xvfb :96 -screen 0 1600x1000x24 -nolisten tcp </dev/null >/dev/null 2>&1; sleep 1; }
@@ -30,7 +30,11 @@ for m in /srv/jammy /srv/nolo /srv/noble; do
   run_audit $m /usr/bin/folio-gable FOLIO_THEME=light AUDIT_QUICK=1
   run_audit $m /usr/bin/folio-gable GABLE_DESKTOP_THEME=colour FOLIO_THEME=light AUDIT_ONLY=desktoptheme
 done
-echo "== Wayland desktop themes (installed, 24.04)"
+echo "== Wayland (installed, 24.04)"
+cp /home/claude/foliostudio/tests/wl.sh /srv/noble/tmp/wl.sh && chmod +x /srv/noble/tmp/wl.sh
+flock /home/claude/.dpkg.lock chroot /srv/noble bash -c "dpkg -s qt6-wayland weston >/dev/null 2>&1 || apt-get -y install qt6-wayland weston >/dev/null 2>&1"
+echo "-- wayland quick audit"
+chroot /srv/noble bash -c "cd /tmp && export DISPLAY=:96; HOME=/tmp/gablehome XDG_CONFIG_HOME=/tmp/gablecfg FOLIO_THEME=light AUDIT_QUICK=1 timeout 1800 /tmp/wl.sh /usr/bin/folio-gable --audit > /tmp/gable_wl.log 2>&1; grep -E '^FAIL|passed, |peak memory' /tmp/gable_wl.log | tail -25"
 for combo in dark:light colour:dark; do
   echo "-- wayland $combo"
   chroot /srv/noble bash -c "cd /tmp && export DISPLAY=:96; HOME=/tmp/gablehome XDG_CONFIG_HOME=/tmp/gablecfg GABLE_DESKTOP_THEME=${combo%%:*} FOLIO_THEME=${combo#*:} AUDIT_ONLY=desktoptheme,dark timeout 1800 /tmp/wl.sh /usr/bin/folio-gable --audit > /tmp/gable_wl.log 2>&1; grep -E '^FAIL|passed, |peak memory' /tmp/gable_wl.log | tail -25"

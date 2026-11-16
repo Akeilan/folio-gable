@@ -370,7 +370,10 @@ public slots:
 
 void install(QApplication& app) {
     QFont f = app.font();
-    f.setFamilies({"Segoe UI", "Noto Sans", "Open Sans", "Ubuntu", "Cantarell", "DejaVu Sans"});
+    // Gable chooses its interface font itself, as Folio Sheet does: Segoe UI, else the Carlito the
+    // package depends on. Left to the desktop it came out as Noto Sans on one computer (taller
+    // lines, a 17 px ribbon text line) and DejaVu Sans on another (G7-31).
+    f.setFamilies({"Segoe UI", "Carlito", "DejaVu Sans"});
     f.setPointSizeF(9);
     app.setFont(f);
     // the same widget style everywhere, whatever Qt style the desktop picks (X2-01)

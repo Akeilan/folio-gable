@@ -133,6 +133,10 @@ private:
     bool textureTarget(int& face, bool& back) const;
     void orientFaces();
     void flipAlong(int axis);
+public:
+    void renameInstance(int inst);   // right-click › Rename… on a group or component (G7-35)
+    QString autosavePath() const;    // this window's recovery copy (G7-23)
+private:
     void text3D();
     void alignView();
     void selectSame(int what);

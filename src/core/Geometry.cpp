@@ -882,6 +882,110 @@ static void resolveCoplanarOverlaps(Entities& E, const std::vector<int>& newFace
     mergeCoplanarAcross(E, mergeEdges);
 }
 
+// A side wall of a push that lies on an existing face facing the other way (a rectangle at the
+// edge of a box top pushed down: its wall lies on the box's side) is material of zero
+// thickness. As in SketchUp both go: the side face loses that piece and the wall is not added,
+// leaving a notch.
+static void cancelOpposingWalls(Entities& E, std::vector<int>& created, int cap) {
+    for (size_t ci = 0; ci < created.size(); ++ci) {
+        int S = created[ci];
+        if (S == cap || S < 0 || !E.faces[S].alive) continue;
+        std::vector<Vec3> tris;
+        faceTriangles(E, S, tris);
+        if (tris.size() < 3) continue;
+        Vec3 c = (tris[0] + tris[1] + tris[2]) / 3.0;
+        // the faces facing the other way in the wall's plane (one face, or several a line splits)
+        std::vector<int> opp;
+        for (int k = 0; k < (int)E.faces.size(); ++k) {
+            if (k == S || !E.faces[k].alive) continue;
+            if (E.faces[k].plane.n.dot(E.faces[S].plane.n) > -1 + 1e-9 || !E.faces[k].plane.sameAs(E.faces[S].plane)) continue;
+            opp.push_back(k);
+        }
+        auto covered = [&](const Vec3& p, double tol) {
+            for (int k : opp) if (E.pointInFace(k, E.faces[k].plane.project(p), tol)) return true;
+            return false;
+        };
+        int g = -1;
+        // only a wall wholly on those faces: anything else is left to the merge below
+        bool within = !opp.empty() && covered(c, kTol);
+        for (int v : E.faces[S].outer)
+            if (within && !covered(E.verts[v].p, kTol * 2)) within = false;
+        if (within) g = opp[0];
+        if (g < 0) continue;
+        Plane P = E.faces[g].plane;
+        Frame2 fr(P);
+        std::vector<Vec2> poly;
+        for (int v : E.faces[S].outer) poly.push_back(fr.to2(E.verts[v].p));
+        auto inPoly = [&](const Vec2& q) {
+            bool in = false;
+            for (size_t a = 0, b = poly.size() - 1; a < poly.size(); b = a++)
+                if ((poly[a].y > q.y) != (poly[b].y > q.y) &&
+                    q.x < (poly[b].x - poly[a].x) * (q.y - poly[a].y) / (poly[b].y - poly[a].y) + poly[a].x)
+                    in = !in;
+            return in;
+        };
+        E.removeFace(S);
+        created[ci] = -1;
+        // split the wall's outline where it runs along or across lines already on the face
+        auto onPlane = [&](int e) {
+            return std::fabs(P.dist(E.verts[E.edges[e].v[0]].p)) < kTol && std::fabs(P.dist(E.verts[E.edges[e].v[1]].p)) < kTol;
+        };
+        std::vector<int> pe;
+        for (int e = 0; e < (int)E.edges.size(); ++e) if (E.edges[e].alive && onPlane(e)) pe.push_back(e);
+        intersectEdges(E, pe);
+        std::unordered_set<int> ne;
+        for (int e = 0; e < (int)E.edges.size(); ++e) if (E.edges[e].alive && onPlane(e)) ne.insert(e);
+        rebuildPlane(E, P, ne, {}, RebuildMode::Draw);
+        // the pieces of the face inside the wall's outline go
+        for (int h = 0; h < (int)E.faces.size(); ++h) {
+            if (!E.faces[h].alive || !E.faces[h].plane.sameAs(P)) continue;
+            std::vector<Vec3> tr;
+            faceTriangles(E, h, tr);
+            if (tr.size() < 3) continue;
+            size_t best = 0;
+            double ba = -1;
+            for (size_t k = 0; k + 2 < tr.size(); k += 3) {
+                double a = (tr[k + 1] - tr[k]).cross(tr[k + 2] - tr[k]).length();
+                if (a > ba) { ba = a; best = k; }
+            }
+            if (inPoly(fr.to2((tr[best] + tr[best + 1] + tr[best + 2]) / 3.0))) E.removeFace(h);
+        }
+        // and so do lines left with no face, inside or on that outline
+        for (int e = 0; e < (int)E.edges.size(); ++e) {
+            if (!E.edges[e].alive || !E.edges[e].faces.empty() || !ne.count(e)) continue;
+            Vec2 m = fr.to2(E.edgeMid(e));
+            bool onOutline = false;
+            for (size_t a = 0, b = poly.size() - 1; a < poly.size() && !onOutline; b = a++) {
+                Vec2 d = poly[a] - poly[b];
+                double L = d.length();
+                if (L < 1e-12) continue;
+                double t = (m - poly[b]).dot(d) / (L * L);
+                if (t >= -1e-9 && t <= 1 + 1e-9 && std::fabs((m - poly[b]).cross(d)) / L < kTol * 2) onOutline = true;
+            }
+            if (onOutline || inPoly(m)) E.removeEdge(e);
+        }
+    }
+    created.erase(std::remove(created.begin(), created.end(), -1), created.end());
+}
+
+// After geometry has been moved onto itself: drop faces that lost their area and, where two
+// faces now share one outline, keep one (not `drop`, the face that was moved, if it survived).
+static void cleanupCollapsed(Entities& E, int drop) {
+    for (int g = 0; g < (int)E.faces.size(); ++g)
+        if (E.faces[g].alive && E.faceArea(g) < kTol * kTol) E.removeFace(g);
+    std::map<std::vector<int>, int> byLoop;
+    for (int g = 0; g < (int)E.faces.size(); ++g) {
+        if (!E.faces[g].alive) continue;
+        std::vector<int> key = E.faces[g].outer;
+        std::sort(key.begin(), key.end());
+        key.push_back(-1 - (int)E.faces[g].holes.size());
+        auto it = byLoop.find(key);
+        if (it == byLoop.end()) { byLoop[key] = g; continue; }
+        if (it->second == drop) { E.removeFace(it->second); it->second = g; }
+        else E.removeFace(g);
+    }
+}
+
 int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int>* createdFaces) {
     if (f < 0 || !E.faces[f].alive || std::fabs(dist) < kTol) return f;
     Face F0 = E.faces[f];
@@ -893,7 +997,7 @@ int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int
     if (!keepOriginal) {
         bool stretch = true;
         bool anyAdjacent = false;
-        double minLen = 1e300;
+        double minLen = 1e300, minLenOut = 1e300;   // side edges' room when pushing in / pulling out
         for (int v : V) {
             for (int e : E.verts[v].edges) {
                 const Edge& Ed = E.edges[e];
@@ -906,7 +1010,7 @@ int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int
                     if (d.cross(n).length() > 1e-6 * l) { stretch = false; break; }
                     // length along -n available when pushing in
                     if (d.dot(n) < 0) minLen = std::min(minLen, l);
-                    else minLen = std::min(minLen, 1e300);
+                    else minLenOut = std::min(minLenOut, l);
                 }
                 for (int g : Ed.faces) {
                     if (g == f || !E.faces[g].alive) continue;
@@ -918,10 +1022,44 @@ int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int
             if (!stretch) break;
         }
         if (stretch && anyAdjacent) {
-            if (dist < 0 && -dist >= minLen - kTol) {
-                // Pushing all the way through collapses the solid: refuse beyond the limit.
-                dist = -(minLen - kTol * 2);
-                if (dist >= 0) return f;
+            // Geometry on the side faces (a loop offset on a side, a line drawn across it) is in
+            // the way too: the face stops where it would reach it rather than cutting through it.
+            {
+                Vec3 p0 = E.verts[V[0]].p;
+                std::set<int> adj;
+                for (int v : V)
+                    for (int e : E.verts[v].edges)
+                        for (int g : E.edges[e].faces) if (g != f && E.faces[g].alive) adj.insert(g);
+                for (int g : adj)
+                    for (int u : E.faceVerts(g)) {
+                        if (Vs.count(u)) continue;
+                        double t = (E.verts[u].p - p0).dot(n);
+                        if (t < -kTol) minLen = std::min(minLen, -t);
+                        else if (t > kTol) minLenOut = std::min(minLenOut, t);
+                    }
+            }
+            double room = dist < 0 ? minLen : minLenOut;
+            if (std::fabs(dist) >= room - kTol) {
+                // Pushed all the way to the other end of the side faces (a box down to its base, a
+                // pocket's floor back up level with the top): the side faces close up, as in
+                // SketchUp. Go exactly to the end, never past it, and heal the coincident geometry.
+                Vec3 off = n * (dist < 0 ? -room : room);
+                Entities before = E;
+                Vec3 endP = E.verts[V[0]].p + off;
+                transformVertices(E, V, Mat4::translation(off), true);
+                cleanupCollapsed(E, f);
+                E.invalidateIndex();
+                E.touch();
+                if (validate(E, 1).empty()) {
+                    for (int g = 0; g < (int)E.faces.size(); ++g)
+                        if (E.faces[g].alive && E.faces[g].plane.n.dot(n) > 0.999 && std::fabs(E.faces[g].plane.dist(endP)) < kTol * 10)
+                            return g;
+                    return -1;
+                }
+                // the geometry it closed on is too tangled to heal: stop just short of it instead
+                E = std::move(before);
+                dist = dist < 0 ? -(room - kTol * 2) : room - kTol * 2;
+                if (std::fabs(dist) < kTol) return f;
             }
             Vec3 off = n * dist;
             for (int v : V) E.moveVertex(v, E.verts[v].p + off);
@@ -1071,6 +1209,7 @@ int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int
             E.removeFace(f);
         }
     }
+    cancelOpposingWalls(E, created, cap);
     if (createdFaces) *createdFaces = created;
     resolveCoplanarOverlaps(E, created, boundary);
     E.touch();
@@ -1112,22 +1251,63 @@ std::vector<std::vector<Vec3>> offsetFaceLoops(const Entities& E, int f, double 
     if (f < 0 || !E.faces[f].alive) return newLoops;
     const Face& F = E.faces[f];
     Frame2 fr(F.plane);
+    // An offset past the middle of the face turns a loop inside out or makes it cross itself; as in
+    // SketchUp that distance is not allowed, so no loops come back (G7-06).
+    auto area2 = [](const std::vector<Vec2>& p) {
+        double a = 0;
+        for (size_t i = 0; i < p.size(); ++i) a += p[i].cross(p[(i + 1) % p.size()]);
+        return a / 2;
+    };
+    auto crossesItself = [](const std::vector<Vec2>& p) {
+        size_t n = p.size();
+        for (size_t i = 0; i < n; ++i)
+            for (size_t j = i + 2; j < n; ++j) {
+                if (i == 0 && j == n - 1) continue;
+                Vec2 a = p[i], b = p[(i + 1) % n], c = p[j], d = p[(j + 1) % n];
+                double d1 = (b - a).cross(c - a), d2 = (b - a).cross(d - a), d3 = (d - c).cross(a - c), d4 = (d - c).cross(b - c);
+                if (((d1 > 1e-9 && d2 < -1e-9) || (d1 < -1e-9 && d2 > 1e-9)) && ((d3 > 1e-9 && d4 < -1e-9) || (d3 < -1e-9 && d4 > 1e-9)))
+                    return true;
+            }
+        return false;
+    };
+    bool bad = false;
+    std::vector<std::vector<Vec2>> out2;
     auto doLoop = [&](const std::vector<int>& L, double d) {
         std::vector<Vec2> q, o;
         for (int v : L) q.push_back(fr.to2(E.verts[v].p));
         if (!offsetLoop2(q, d, o)) return;
+        double a0 = area2(q), a1 = area2(o);
+        if (a0 * a1 <= 0 || crossesItself(o)) { bad = true; return; }
+        // a loop that shrank must stay inside the old one: each new edge keeps its direction
+        for (size_t i = 0; i < q.size() && i < o.size(); ++i) {
+            Vec2 e0 = q[(i + 1) % q.size()] - q[i], e1 = o[(i + 1) % o.size()] - o[i];
+            if (e0.dot(e1) <= 0) { bad = true; return; }
+        }
+        out2.push_back(o);
         std::vector<Vec3> r;
         for (auto& p : o) r.push_back(F.plane.project(fr.to3(p)));
         newLoops.push_back(r);
     };
     doLoop(F.outer, dist);
     for (auto& h : F.holes) doLoop(h, dist);
+    // loops that grew into each other (a hole offset past the outline) are not allowed either
+    for (size_t a = 0; a < out2.size() && !bad; ++a)
+        for (size_t b = a + 1; b < out2.size() && !bad; ++b) {
+            for (size_t i = 0; i < out2[a].size(); ++i)
+                for (size_t j = 0; j < out2[b].size(); ++j) {
+                    Vec2 p = out2[a][i], q2 = out2[a][(i + 1) % out2[a].size()], r = out2[b][j], s = out2[b][(j + 1) % out2[b].size()];
+                    double d1 = (q2 - p).cross(r - p), d2 = (q2 - p).cross(s - p), d3 = (s - r).cross(p - r), d4 = (s - r).cross(q2 - r);
+                    if (((d1 > 1e-9 && d2 < -1e-9) || (d1 < -1e-9 && d2 > 1e-9)) && ((d3 > 1e-9 && d4 < -1e-9) || (d3 < -1e-9 && d4 > 1e-9))) bad = true;
+                }
+        }
+    if (bad) newLoops.clear();
     return newLoops;
 }
 
 bool offsetFace(Entities& E, int f, double dist) {
     if (f < 0 || !E.faces[f].alive) return false;
     std::vector<std::vector<Vec3>> newLoops = offsetFaceLoops(E, f, dist);
+    if (newLoops.empty()) return false;   // past the middle of the face: not allowed
     // Curves on offset loops keep being a curve.
     std::vector<int> all;
     for (auto& L : newLoops) {
@@ -1249,7 +1429,7 @@ static bool sweepRings(Entities& E, int f, const std::vector<std::vector<std::ve
                 size_t j = (i + 1) % A.size();
                 if (forward) addQuad(E, A[i], A[j], B[j], B[i], created);
                 else addQuad(E, B[i], B[j], A[j], A[i], created);
-                if (li < softProfile.size() && softProfile[li][i]) {
+                if (li < softProfile.size() && i < softProfile[li].size() && A.size() == softProfile[li].size() && softProfile[li][i]) {
                     int e = E.findEdge(A[i], B[i]);
                     if (e >= 0) E.edges[e].soft = E.edges[e].smooth = true;
                 }
@@ -1265,6 +1445,15 @@ static bool sweepRings(Entities& E, int f, const std::vector<std::vector<std::ve
     for (int g : created) { E.faces[g].matFront = F0.matFront; E.faces[g].matBack = F0.matBack; }
     if (closed) {
         E.removeFace(f);
+        // The profile's own outline is not part of the result when the sweep starts on a mitre
+        // away from it (a frame swept round a rectangle): its lines would be left inside (G7-09).
+        std::vector<int> loopVerts = F0.outer;
+        for (auto& h : F0.holes) loopVerts.insert(loopVerts.end(), h.begin(), h.end());
+        for (size_t i = 0; i < loopVerts.size(); ++i) {
+            int e = E.findEdge(loopVerts[i], loopVerts[(i + 1) % loopVerts.size()]);
+            if (e >= 0 && E.edges[e].faces.empty()) E.removeEdge(e);
+        }
+        for (int v : loopVerts) E.removeVertexIfOrphan(v);
     } else {
         // end cap
         auto& last = rv[nr - 1];
@@ -1289,6 +1478,8 @@ static bool sweepRings(Entities& E, int f, const std::vector<std::vector<std::ve
     return true;
 }
 
+static bool revolve(Entities& E, int f, std::vector<std::vector<Vec3>> profile, const Vec3& center, const Vec3& axis, int segments);
+
 bool followMe(Entities& E, int f, std::vector<Vec3> path, bool closedPath) {
     if (f < 0 || !E.faces[f].alive || path.size() < 2) return false;
     // remove duplicates
@@ -1309,6 +1500,30 @@ bool followMe(Entities& E, int f, std::vector<Vec3> path, bool closedPath) {
             q.clear();
             for (int v : h) q.push_back(E.verts[v].p);
             profile.push_back(q);
+        }
+    }
+    if (closedPath && n >= 6) {
+        // a closed path that is a circle (or regular polygon) about an axis the profile's plane
+        // holds: turn the profile about that axis (a sphere from a circle and a circular path)
+        Vec3 c;
+        for (auto& q : p) c += q;
+        c = c / (double)n;
+        Vec3 nn;
+        for (size_t i = 0; i < n; ++i) nn += (p[i] - c).cross(p[(i + 1) % n] - c);
+        double R = (p[0] - c).length();
+        bool circle = nn.length() > 1e-9 && R > kTol;
+        if (circle) {
+            nn = nn.normalized();
+            for (auto& q : p)
+                if (std::fabs((q - c).length() - R) > R * 1e-6 + kTol || std::fabs((q - c).dot(nn)) > kTol) { circle = false; break; }
+        }
+        if (circle && std::fabs(F0.plane.n.dot(nn)) < 1e-6 && std::fabs(F0.plane.dist(c)) < kTol * 10) {
+            bool crosses = false;
+            Vec3 side = F0.plane.n.cross(nn).normalized();
+            bool pos = false, neg = false;
+            for (auto& q : profile[0]) { double t = (q - c).dot(side); pos |= t > kTol; neg |= t < -kTol; }
+            crosses = pos && neg;
+            if (crosses) return revolve(E, f, profile, c, nn, (int)n);
         }
     }
     auto dir = [&](size_t i) { return (p[(i + 1) % n] - p[i]).normalized(); };
@@ -1353,20 +1568,49 @@ bool followMe(Entities& E, int f, std::vector<Vec3> path, bool closedPath) {
     return sweepRings(E, f, rings, closedPath, smooth);
 }
 
-bool followMeAround(Entities& E, int f, const Vec3& center, const Vec3& axis, int segments) {
-    if (f < 0 || !E.faces[f].alive || segments < 3) return false;
-    const Face F0 = E.faces[f];
-    std::vector<std::vector<Vec3>> profile;
-    {
-        std::vector<Vec3> q;
-        for (int v : F0.outer) q.push_back(E.verts[v].p);
-        profile.push_back(q);
-        for (auto& h : F0.holes) {
-            q.clear();
-            for (int v : h) q.push_back(E.verts[v].p);
-            profile.push_back(q);
+// The part of a profile on one side of the axis it turns about, when the axis runs across it (a
+// circle turned about its own diameter makes a sphere, not every face twice). The larger side
+// is kept; profiles the axis does not cross come back unchanged.
+static std::vector<std::vector<Vec3>> halfProfile(const std::vector<std::vector<Vec3>>& profile, const Vec3& n,
+                                                  const Vec3& center, const Vec3& axis) {
+    Vec3 a = axis.normalized();
+    Vec3 side = n.cross(a);
+    if (side.length() < 1e-9) return profile;          // profile not in a plane holding the axis
+    side = side.normalized();
+    if (std::fabs((profile[0][0] - center).dot(n)) > kTol * 10) return profile;   // axis not in the plane
+    bool pos = false, neg = false;
+    for (auto& q : profile[0]) { double t = (q - center).dot(side); pos |= t > kTol; neg |= t < -kTol; }
+    if (!(pos && neg)) return profile;
+    auto clip = [&](const std::vector<Vec3>& L, double sgn) {
+        std::vector<Vec3> out;
+        for (size_t i = 0; i < L.size(); ++i) {
+            const Vec3 &P = L[i], &Q = L[(i + 1) % L.size()];
+            double tp = sgn * (P - center).dot(side), tq = sgn * (Q - center).dot(side);
+            if (tp >= -kTol) out.push_back(tp < kTol ? P - side * ((P - center).dot(side)) : P);
+            if ((tp > kTol && tq < -kTol) || (tp < -kTol && tq > kTol)) out.push_back(P + (Q - P) * (tp / (tp - tq)));
         }
+        std::vector<Vec3> r;
+        for (auto& q : out) if (r.empty() || !r.back().near(q)) r.push_back(q);
+        while (r.size() > 1 && r.front().near(r.back())) r.pop_back();
+        return r;
+    };
+    auto area = [&](const std::vector<Vec3>& L) {
+        Vec3 s;
+        for (size_t i = 0; i < L.size(); ++i) s += L[i].cross(L[(i + 1) % L.size()]);
+        return std::fabs(s.dot(n)) / 2;
+    };
+    double sgn = area(clip(profile[0], 1)) >= area(clip(profile[0], -1)) ? 1 : -1;
+    std::vector<std::vector<Vec3>> r;
+    for (auto& L : profile) {
+        auto c = clip(L, sgn);
+        if (c.size() >= 3 && area(c) > kTol * kTol) r.push_back(c);
+        else if (&L == &profile[0]) return profile;
     }
+    return r;
+}
+
+static bool revolve(Entities& E, int f, std::vector<std::vector<Vec3>> profile, const Vec3& center, const Vec3& axis, int segments) {
+    profile = halfProfile(profile, E.faces[f].plane.n, center, axis);
     std::vector<std::vector<std::vector<Vec3>>> rings;
     std::vector<bool> smooth;
     for (int k = 0; k < segments; ++k) {
@@ -1378,6 +1622,21 @@ bool followMeAround(Entities& E, int f, const Vec3& center, const Vec3& axis, in
         smooth.push_back(true);
     }
     return sweepRings(E, f, rings, true, smooth);
+}
+
+bool followMeAround(Entities& E, int f, const Vec3& center, const Vec3& axis, int segments) {
+    if (f < 0 || !E.faces[f].alive || segments < 3) return false;
+    const Face F0 = E.faces[f];
+    std::vector<std::vector<Vec3>> profile;
+    std::vector<Vec3> q;
+    for (int v : F0.outer) q.push_back(E.verts[v].p);
+    profile.push_back(q);
+    for (auto& h : F0.holes) {
+        q.clear();
+        for (int v : h) q.push_back(E.verts[v].p);
+        profile.push_back(q);
+    }
+    return revolve(E, f, profile, center, axis, segments);
 }
 
 // ------------------------------------------------------------------ intersect
@@ -1673,8 +1932,43 @@ void faceTriangles(const Entities& E, int f, std::vector<Vec3>& out) {
     for (auto& h : F.holes) add(h);
     TessResult tr;
     if (!tessellate(l2, tr)) return;
-    for (int idx : tr.tris)
-        out.push_back(idx < (int)ids.size() ? E.verts[ids[idx]].p : fr.to3(tr.pts[idx]));
+    // A corner of the face that lies on a triangle's edge (an L-shape's inner corner on a long
+    // diagonal) leaves a crack there in exported meshes: split such triangles at it (G7-20).
+    std::vector<Vec2> P;
+    for (auto& L : l2) P.insert(P.end(), L.begin(), L.end());
+    auto at = [&](int i) { return i < (int)P.size() ? P[i] : tr.pts[i]; };
+    std::vector<int> T = tr.tris;
+    for (size_t t = 0; t + 2 < T.size(); t += 3) {
+        bool split = false;
+        for (int k = 0; k < 3 && !split; ++k) {
+            int a = T[t + k], b = T[t + (k + 1) % 3], c = T[t + (k + 2) % 3];
+            Vec2 A = at(a), B = at(b);
+            Vec2 d = B - A;
+            double L2 = d.dot(d);
+            if (L2 < 1e-18) continue;
+            for (int v = 0; v < (int)P.size(); ++v) {
+                if (v == a || v == b || v == c) continue;
+                Vec2 q = P[v] - A;
+                double s = q.dot(d) / L2;
+                if (s <= 1e-9 || s >= 1 - 1e-9) continue;
+                if (std::fabs(q.cross(d)) / std::sqrt(L2) > kTol * 0.1) continue;
+                if (at(v).x == A.x && at(v).y == A.y) continue;
+                T[t + 0] = a; T[t + 1] = v; T[t + 2] = c;   // (a, v, c) here, (v, b, c) appended
+                T.push_back(v); T.push_back(b); T.push_back(c);
+                split = true;
+                break;
+            }
+        }
+        if (split) t -= 3;   // look at the shrunk triangle again
+    }
+    for (size_t t = 0; t + 2 < T.size(); t += 3) {
+        Vec2 a = at(T[t]), b = at(T[t + 1]), c = at(T[t + 2]);
+        if (std::fabs((b - a).cross(c - a)) < 1e-9) continue;   // no area: a sliver of collinear corners
+        for (int k = 0; k < 3; ++k) {
+            int idx = T[t + k];
+            out.push_back(idx < (int)ids.size() ? E.verts[ids[idx]].p : fr.to3(tr.pts[idx]));
+        }
+    }
 }
 
 // ------------------------------------------------------------------ selection helpers

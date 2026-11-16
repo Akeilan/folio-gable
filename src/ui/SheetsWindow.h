@@ -32,8 +32,9 @@ struct SheetSel {
 };
 
 // Draws a sheet with a painter at pxPerMm; viewImage gives the picture for viewport i at a size in pixels.
+// viewVector, when given, draws viewport i into a rectangle (in painter units) instead of a picture.
 void paintSheet(QPainter& p, const Sheet& s, const Model& m, double pxPerMm, const std::function<QImage(int, QSize)>& viewImage,
-                const SheetSel* sel = nullptr);
+                const SheetSel* sel = nullptr, const std::function<void(QPainter&, int, const QRectF&)>& viewVector = nullptr);
 // The text a dimension shows: the model length when its viewport has a scale, else paper millimetres.
 QString dimensionText(const Sheet& s, const SheetDimension& d, const Model& m);
 // "1:50" for a scale of 50 model mm per paper mm.
@@ -91,7 +92,9 @@ public:
     QImage viewImage(int sheetIdx, int vpIdx, QSize px, bool cached = true);
     int defaultScene() const;
     // print or save every sheet: to a PDF file (path) or the printer
-    bool exportPdf(const QString& path, QString* err = nullptr);
+    // vector: views as hidden-line drawings of the model's edges instead of pictures (G7-37)
+    bool exportPdf(const QString& path, QString* err = nullptr, bool vector = false);
+    void drawViewVector(int sheetIdx, int vpIdx, QPainter& p, const QRectF& r, double penWidth);
     void printSheets();
     void addViewport(const QRectF& mm);
     void addSheet();

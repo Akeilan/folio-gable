@@ -378,6 +378,7 @@ public:
     BBox entitiesBBox(const Entities& e, bool includeHidden = true) const;
     BBox worldBBox() const { return entitiesBBox(root); }
     void purgeUnused();
+    void dropUnusedGroups();
 };
 
 // Converts a length (mm) to display text and parses user input.

@@ -55,6 +55,7 @@
 #include <QTimer>
 #include <QGroupBox>
 #include <QLabel>
+#include <QTreeWidget>
 #include <cstdio>
 #include <functional>
 #include <map>
@@ -573,13 +574,13 @@ private:
         // triple click: third click soon after the double click
         clickPx(scr(Vec3(1000, 750, 1000)));
         check(d->sel.size() == 18, QString("triple-click selects all connected (sel %1)").arg(d->sel.size()));
-        clickPx(QPointF(5, 5));
+        clickPx(QPointF(30, 30));   // not within the window's 5 px resize edge
         check(d->sel.empty(), "click on empty space clears");
         // window (left to right) fully around the box vs crossing (right to left) through it
-        QPointF a(5, 5), b(v->width() - 5, v->height() - 5);
+        QPointF a(30, 30), b(v->width() - 30, v->height() - 30);
         dragPx(a, b);
         check(d->sel.size() == 18, QString("window selection (sel %1)").arg(d->sel.size()));
-        clickPx(QPointF(5, 5));
+        clickPx(QPointF(30, 30));
         QPointF c = scr(Vec3(1000, 750, 1000));
         dragPx(c + QPointF(40, 40), c - QPointF(40, 40));
         check(!d->sel.empty(), QString("crossing selection picks what it touches (sel %1)").arg(d->sel.size()));
@@ -1719,6 +1720,182 @@ private:
         }
         return probs;
     }
+    // Backlog 7: what the release run never caught before (G7-34)
+    int boxGroup(double x0, double y0, double z0, double x1, double y1, double z1) {
+        int def = d->model.addDef("Group", true);
+        Entities& G = d->model.defs[def].ents;
+        geom::addPolyline(G, {Vec3(x0, y0, z0), Vec3(x1, y0, z0), Vec3(x1, y1, z0), Vec3(x0, y1, z0)}, true);
+        for (int f = 0; f < (int)G.faces.size(); ++f)
+            if (G.faces[f].alive) { geom::pushPull(G, f, G.faces[f].plane.n.z < 0 ? -(z1 - z0) : (z1 - z0), false); break; }
+        Instance in;
+        in.def = def;
+        d->model.root.insts.push_back(in);
+        return (int)d->model.root.insts.size() - 1;
+    }
+    void sBacklog7() {
+        begin("backlog 7");
+        reset();
+        // solid tools: a peg entering a block, and boxes with flush faces, give solids (G7-07)
+        {
+            d->begin("test");
+            int a = boxGroup(400, 500, 400, 700, 1100, 600), b = boxGroup(200, 800, 200, 1000, 1600, 900);
+            d->commit();
+            d->setSelection({{EntKind::Instance, a}, {EntKind::Instance, b}});
+            act("solid_union");
+            std::vector<int> live;
+            for (int i = 0; i < (int)E().insts.size(); ++i) if (E().insts[i].alive) live.push_back(i);
+            check(live.size() == 1 && instanceIsSolid(d->model, E().insts[live[0]]) && near(instanceVolume(d->model, E().insts[live[0]]), 4.66e8, 1e3),
+                  "union of a peg into a block is one solid");
+            int groups = 0;
+            for (auto& df : d->model.defs) groups += df.alive && df.isGroup;
+            check(groups == 1, QString("the groups the union replaced are gone (%1 left)").arg(groups));
+        }
+        reset();
+        {
+            d->begin("test");
+            int a = boxGroup(0, 0, 0, 1000, 1000, 1000), b = boxGroup(500, 0, 0, 1500, 1000, 1000);
+            d->commit();
+            d->setSelection({{EntKind::Instance, a}, {EntKind::Instance, b}});
+            act("solid_union");
+            int live = -1;
+            for (int i = 0; i < (int)E().insts.size(); ++i) if (E().insts[i].alive) live = i;
+            check(live >= 0 && instanceIsSolid(d->model, E().insts[live]) && near(instanceVolume(d->model, E().insts[live]), 1.5e9, 1e3),
+                  "union of boxes with flush faces is one solid");
+        }
+        // push/pull: a pocket pulled back flush, a box pushed to nothing, a notch at an edge (G7-02, G7-05)
+        reset();
+        box(2000, 1500, 1000);
+        {
+            d->begin("test");
+            geom::addPolyline(E(), {Vec3(500, 500, 1000), Vec3(1000, 500, 1000), Vec3(1000, 1000, 1000), Vec3(500, 1000, 1000)}, true);
+            int f = faceAt(Vec3(750, 750, 1000));
+            int fl = geom::pushPull(E(), f, E().faces[f].plane.n.z > 0 ? -300 : 300, false);
+            geom::pushPull(E(), fl, E().faces[fl].plane.n.z > 0 ? 300 : -300, false);
+            d->commit();
+            check(geom::validate(E()).empty() && near(vol(), 3e9, 1), "a pocket pulled back flush leaves a valid box");
+        }
+        reset();
+        box(2000, 1500, 1000);
+        {
+            d->begin("test");
+            int f = faceAt(Vec3(1000, 750, 1000));
+            geom::pushPull(E(), f, E().faces[f].plane.n.z > 0 ? -1000 : 1000, false);
+            d->commit();
+            check(faces() == 1 && geom::validate(E()).empty(), QString("a box pushed down to nothing is one face (%1)").arg(faces()));
+        }
+        reset();
+        box(2000, 1500, 1000);
+        {
+            d->begin("test");
+            geom::addPolyline(E(), {Vec3(1500, 0, 1000), Vec3(2000, 0, 1000), Vec3(2000, 500, 1000), Vec3(1500, 500, 1000)}, true);
+            int f = faceAt(Vec3(1750, 250, 1000));
+            geom::pushPull(E(), f, E().faces[f].plane.n.z > 0 ? -400 : 400, false);
+            d->commit();
+            check(geom::validate(E()).empty() && geom::isSolid(E()) && near(vol(), 3e9 - 1e8, 1), "a rectangle at the edge pushed in makes a notch");
+            int before = faces();
+            int top = faceAt(Vec3(200, 1000, 1000));
+            check(top >= 0 && !geom::offsetFace(E(), top, 5000) && faces() == before, "offset past the middle of a face is refused (G7-06)");
+        }
+        // Follow Me: a sphere and a closed frame are solids (G7-08, G7-09)
+        reset();
+        {
+            d->begin("test");
+            std::vector<Vec3> path, prof;
+            for (int i = 0; i < 24; ++i) path.push_back(Vec3(800 * std::cos(2 * kPi * i / 24), 800 * std::sin(2 * kPi * i / 24), 0));
+            for (int i = 0; i < 24; ++i) prof.push_back(Vec3(500 * std::cos(2 * kPi * i / 24), 0, 500 * std::sin(2 * kPi * i / 24)));
+            geom::addPolyline(E(), prof, true);
+            int pf = faceAt(Vec3(0, 0, 0));
+            bool ok = pf >= 0 && geom::followMe(E(), pf, path, true);
+            d->commit();
+            check(ok && geom::isSolid(E()) && near(vol(), 5.088e8, 1e6), QString("Follow Me makes a sphere from a circle (%1)").arg(vol()));
+        }
+        // files: a COLLADA scene with several objects and a mesh with corners on edges (G7-01, G7-16, G7-20)
+        reset();
+        {
+            QString dir = QDir::tempPath() + "/gable-audit-b7";
+            QDir().mkpath(dir);
+            QFile f(dir + "/scene.dae");
+            f.open(QIODevice::WriteOnly);
+            QString geo = "<geometry id=\"g%1\"><mesh><source id=\"p%1\"><float_array count=\"9\">0 0 0 1 0 0 0 1 0</float_array></source>"
+                          "<vertices id=\"v%1\"><input semantic=\"POSITION\" source=\"#p%1\"/></vertices><triangles count=\"1\">"
+                          "<input semantic=\"VERTEX\" source=\"#v%1\" offset=\"0\"/><p>0 1 2</p></triangles></mesh></geometry>";
+            QString lib, nodes;
+            for (int i = 0; i < 6; ++i) {
+                lib += geo.arg(i);
+                nodes += QString("<node name=\"n%1\"><translate>%1 0 0</translate><node name=\"c%1\"><instance_geometry url=\"#g%1\"/></node></node>").arg(i);
+            }
+            f.write(QString("<?xml version=\"1.0\"?><COLLADA><asset><unit meter=\"1\"/><up_axis>Z_UP</up_axis></asset><library_geometries>%1</library_geometries>"
+                            "<library_visual_scenes><visual_scene id=\"s\">%2</visual_scene></library_visual_scenes><scene><instance_visual_scene url=\"#s\"/></scene></COLLADA>")
+                        .arg(lib, nodes).toUtf8());
+            f.close();
+            ImportOptions io;
+            QString err;
+            int idx = importFile(d->model, d->model.root, dir + "/scene.dae", io, &err);
+            std::vector<WorldTri> tris;
+            collectWorld(d->model, tris, nullptr, false);
+            check(idx >= 0 && tris.size() == 6, QString("a COLLADA scene of six objects imports (%1 triangles)").arg(tris.size()));
+            reset();
+            box(2000, 1500, 1000);
+            d->begin("test");
+            geom::addPolyline(E(), {Vec3(0, 0, 1000), Vec3(1000, 0, 1000), Vec3(1000, 1500, 1000), Vec3(0, 1500, 1000)}, true);
+            int fr = faceAt(Vec3(500, 750, 1000));
+            if (fr >= 0) geom::pushPull(E(), fr, E().faces[fr].plane.n.z > 0 ? 500 : -500, false);
+            d->commit();
+            double want = vol();
+            check(geom::isSolid(E()) && near(want, 3.75e9, 1), "a stepped box for the STL round trip");
+            ExportOptions eo;
+            exportFile(d->model, dir + "/step.stl", eo, &err);
+            Model back;
+            int bi = importFile(back, back.root, dir + "/step.stl", io, &err);
+            double got = bi >= 0 ? geom::volume(back.defs[back.root.insts[bi].def].ents) : 0;
+            check(bi >= 0 && geom::isSolid(back.defs[back.root.insts[bi].def].ents) && near(got, want, 1),
+                  QString("an L-shaped solid comes back from STL whole (%1 of %2)").arg(got).arg(want));
+            QDir(dir).removeRecursively();
+        }
+        // typed lengths and component formulas (G7-11, G7-12)
+        {
+            UnitSettings in;
+            in.unit = LengthUnit::Inch;
+            double mm = 0;
+            check(parseLength("1 1/2", in, mm) && near(mm, 38.1, 1e-9), "1 1/2 typed in inches");
+            dyn::Value out;
+            auto none = [](const QString&, dyn::Value&, QString&) { return false; };
+            check(dyn::evaluate("LEN(\"door\")&LEFT(\"abc\",2)", none, out) && out.toText() == "4ab", "text functions in component formulas");
+        }
+        // naming a group from the right-click menu's Rename and the Eraser beside Select (G7-35, G7-36)
+        reset();
+        box(1000, 1000, 1000);
+        act("selectall");
+        act("makegroup");
+        {
+            int gi = -1;
+            for (int i = 0; i < (int)E().insts.size(); ++i) if (E().insts[i].alive) gi = i;
+            onModal = [](QWidget* m) { if (auto* dl = qobject_cast<QInputDialog*>(m)) dl->setTextValue("Garden shed"); };
+            w->renameInstance(gi);
+            onModal = nullptr;
+            settle(100);
+            check(gi >= 0 && E().insts[gi].name == "Garden shed", "a group is named with Rename");
+            auto* outl = w->findChild<OutlinerPanel*>();
+            QTreeWidgetItem* it = outl && outl->tree()->topLevelItemCount() ? outl->tree()->topLevelItem(0) : nullptr;
+            check(it && it->text(0).startsWith("Garden shed"), "the Outliner shows the name");
+            if (it) {
+                outl->startRename(it);
+                settle(50);
+                if (auto* ed = outl->tree()->findChild<QLineEdit*>()) { ed->setText("Tool shed"); QKeyEvent k(QEvent::KeyPress, Qt::Key_Return, {}); QApplication::sendEvent(ed, &k); }
+                settle(100);
+                check(gi >= 0 && E().insts[gi].name == "Tool shed", "a group is renamed in the Outliner");
+            }
+            RibbonButton *sel = nullptr, *era = nullptr;
+            for (auto* b : w->findChildren<RibbonButton*>())
+                if (b->size() == RibbonButton::Large && b->action() == w->act_["tool_select"]) sel = b;
+                else if (b->size() == RibbonButton::Large && b->action() == w->act_["tool_eraser"] && b->parentWidget() && sel && b->parentWidget() == sel->parentWidget()) era = b;
+            check(sel && era && era->height() == sel->height() && std::abs(era->x() - sel->x()) < 120, "a large Eraser button beside Select");
+        }
+        // two windows keep separate recovery copies (G7-23)
+        check(w->autosavePath().contains(QString::number(QCoreApplication::applicationPid())), "the recovery copy is this window's own");
+        validate("backlog 7");
+    }
+
     // X2-04: the same text height on Ubuntu 22.04 and 24.04 (24.04's Carlito has Calibri's tall line metrics)
     void sFonts() {
         begin("chrome text height");
@@ -2365,6 +2542,15 @@ int Auditor::run() {
     QTimer closer;
     startModalCloser(closer);
     settle(300);
+    // The view must be on screen with its drawing set up before any click means anything; on
+    // Wayland that takes longer than on X11 (G7-33).
+    {
+        QElapsedTimer t;
+        t.start();
+        while (t.elapsed() < 15000 && !(v->isValid() && v->width() > 100 && v->height() > 100 && v->isVisible())) settle(50);
+        settle(300);
+        say(QString("   view %1 x %2, drawing %3").arg(v->width()).arg(v->height()).arg(v->isValid() ? "ready" : "NOT ready"));
+    }
     {
         // File › Send in email starts the mail app: during the audit a stand-in that only notes the call
         QString fake = QDir::tempPath() + "/gable-audit-bin";
@@ -2386,7 +2572,7 @@ int Auditor::run() {
             {"chrome", [this] { sChrome(); }}, {"actions", [this] { sAllActions(); }}, {"context", [this] { sContextMenus(); }},
             {"ribbon", [this] { sRibbonButtons(); }}, {"group", [this] { sGroupArray(); }}, {"scale", [this] { sScale(); }},
             {"clip", [this] { sClipboardUndo(); }}, {"camera", [this] { sCamera(); }}, {"files", [this] { sFiles(); }},
-            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}, {"dark", [this] { sDarkMode(); }}, {"sheets", [this] { sSheets(); }}, {"email", [this] { sEmail(); }}, {"desktoptheme", [this] { sDesktopTheme(); }}, {"fonts", [this] { sFonts(); }}};
+            {"erase", [this] { sEraserPaint(); }}, {"move", [this] { sMoveEdge(); }}, {"new", [this] { sNewFeatures(); }}, {"panels", [this] { sPanels(); }}, {"groupedit", [this] { sGroupEdit(); }}, {"slice", [this] { sSlice(); }}, {"orbit", [this] { sOrbit(); }}, {"textures", [this] { sTextures(); }}, {"materials", [this] { sMaterials(); }}, {"edgestyles", [this] { sEdgeStyles(); }}, {"matchphoto", [this] { sMatchPhoto(); }}, {"solids2", [this] { sSolidInspector(); }}, {"copyview", [this] { sCopyView(); }}, {"dynamic", [this] { sDynamic(); }}, {"dark", [this] { sDarkMode(); }}, {"sheets", [this] { sSheets(); }}, {"email", [this] { sEmail(); }}, {"desktoptheme", [this] { sDesktopTheme(); }}, {"fonts", [this] { sFonts(); }}, {"backlog7", [this] { sBacklog7(); }}};
         for (const QString& k : only.split(','))
             if (m.count(k)) m[k]();
         say(QString("\n%1 passed, %2 failed").arg(pass).arg(fail));
@@ -2425,6 +2611,7 @@ int Auditor::run() {
     sSheets();
     sEmail();
     sFonts();
+    sBacklog7();
     if (qEnvironmentVariableIsSet("GABLE_DESKTOP_THEME")) sDesktopTheme();
     if (!qEnvironmentVariableIsSet("AUDIT_QUICK")) {
         sAllActions();

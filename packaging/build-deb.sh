@@ -33,7 +33,7 @@ Version: $VERSION
 Architecture: amd64
 Maintainer: Folio Studio <folio@localhost>
 Installed-Size: $SIZE
-Depends: $DEPS, qt6-qpa-plugins
+Depends: $DEPS, qt6-qpa-plugins, fonts-crosextra-carlito
 Recommends: qt6-image-formats-plugins, qt6-wayland
 Conflicts: gable
 Replaces: gable

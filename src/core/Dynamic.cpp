@@ -2,7 +2,10 @@
 #include "core/Dynamic.h"
 #include "core/Geometry.h"
 #include <QColor>
+#include <QLocale>
+#include <algorithm>
 #include <cmath>
+#include <random>
 #include <map>
 #include <memory>
 #include <set>
@@ -339,7 +342,153 @@ struct Eval {
             else out = Value(std::atan2(y, x) / kDeg);
             return true;
         }
+        // text functions, as in SketchUp's dynamic components (positions count from 1)
+        auto text = [&](size_t k, QString& t) { Value v; if (!run(a->a[k].get(), v)) return false; t = v.toText(); return true; };
+        if (f == "LEN" || f == "UPPER" || f == "LOWER" || f == "PROPER" || f == "TRIM" || f == "CODE" || f == "VALUE") {
+            if (!need(1, 1)) return false;
+            QString t;
+            if (!text(0, t)) return false;
+            if (f == "LEN") out = Value((double)t.size());
+            else if (f == "UPPER") out = Value(t.toUpper());
+            else if (f == "LOWER") out = Value(t.toLower());
+            else if (f == "TRIM") out = Value(t.simplified());
+            else if (f == "CODE") {
+                if (t.isEmpty()) { err = "CODE needs some text."; return false; }
+                out = Value((double)t.at(0).unicode());
+            } else if (f == "VALUE") {
+                bool ok = false;
+                double d = t.trimmed().toDouble(&ok);
+                if (!ok) { err = QString("VALUE: \"%1\" isn't a number.").arg(t); return false; }
+                out = Value(d);
+            } else {   // PROPER: each word starts with a capital
+                QString r = t.toLower();
+                bool start = true;
+                for (QChar& c : r) { if (c.isLetter()) { if (start) c = c.toUpper(); start = false; } else start = true; }
+                out = Value(r);
+            }
+            return true;
+        }
+        if (f == "LEFT" || f == "RIGHT") {
+            if (!need(1, 2)) return false;
+            QString t;
+            double k = 1;
+            if (!text(0, t) || (n > 1 && !arg(1, k))) return false;
+            int c = std::max(0, (int)k);
+            out = Value(f == "LEFT" ? t.left(c) : t.right(c));
+            return true;
+        }
+        if (f == "MID") {
+            if (!need(3, 3)) return false;
+            QString t;
+            double st, c;
+            if (!text(0, t) || !arg(1, st) || !arg(2, c)) return false;
+            if (st < 1) { err = "MID: the start is before the first letter."; return false; }
+            out = Value(t.mid((int)st - 1, std::max(0, (int)c)));
+            return true;
+        }
+        if (f == "FIND") {
+            if (!need(2, 3)) return false;
+            QString what, in;
+            double st = 1;
+            if (!text(0, what) || !text(1, in) || (n > 2 && !arg(2, st))) return false;
+            int at = in.indexOf(what, std::max(0, (int)st - 1), Qt::CaseSensitive);
+            if (at < 0) { err = QString("FIND: \"%1\" isn't there.").arg(what); return false; }
+            out = Value((double)(at + 1));
+            return true;
+        }
+        if (f == "REPLACE") {
+            if (!need(4, 4)) return false;
+            QString t, by;
+            double st, c;
+            if (!text(0, t) || !arg(1, st) || !arg(2, c) || !text(3, by)) return false;
+            if (st < 1) { err = "REPLACE: the start is before the first letter."; return false; }
+            out = Value(t.left((int)st - 1) + by + t.mid((int)st - 1 + std::max(0, (int)c)));
+            return true;
+        }
+        if (f == "SUBSTITUTE") {
+            if (!need(3, 4)) return false;
+            QString t, from, to;
+            double which = 0;
+            if (!text(0, t) || !text(1, from) || !text(2, to) || (n > 3 && !arg(3, which))) return false;
+            if (from.isEmpty()) { out = Value(t); return true; }
+            if (n < 4) { out = Value(QString(t).replace(from, to)); return true; }
+            int at = -1;
+            for (int k = 0; k < (int)which; ++k) { at = t.indexOf(from, at + 1); if (at < 0) break; }
+            out = Value(at < 0 ? t : t.left(at) + to + t.mid(at + from.size()));
+            return true;
+        }
+        if (f == "REPT") {
+            if (!need(2, 2)) return false;
+            QString t;
+            double k;
+            if (!text(0, t) || !arg(1, k)) return false;
+            if (k < 0 || t.size() * k > 32767) { err = "REPT: that many copies is too many."; return false; }
+            out = Value(t.repeated((int)k));
+            return true;
+        }
+        if (f == "EXACT") {
+            if (!need(2, 2)) return false;
+            QString x, y;
+            if (!text(0, x) || !text(1, y)) return false;
+            out = Value(x == y ? 1.0 : 0.0);
+            return true;
+        }
+        if (f == "CHAR") {
+            if (!need(1, 1)) return false;
+            double c;
+            if (!arg(0, c)) return false;
+            if (c < 1 || c > 0xFFFF) { err = "CHAR: there is no letter with that number."; return false; }
+            out = Value(QString(QChar((ushort)c)));
+            return true;
+        }
+        if (f == "DOLLAR") {
+            if (!need(1, 2)) return false;
+            double x, d = 2;
+            if (!arg(0, x) || (n > 1 && !arg(1, d))) return false;
+            int dec = std::clamp((int)d, 0, 10);
+            QString s = QLocale(QLocale::English).toString(std::fabs(x), 'f', dec);
+            out = Value(x < 0 ? "($" + s + ")" : "$" + s);
+            return true;
+        }
+        if (f == "NEAREST") {   // the value among the rest nearest to the first
+            if (!need(2, 99)) return false;
+            double x, best = 0, bd = 1e300;
+            if (!arg(0, x)) return false;
+            for (size_t k = 1; k < n; ++k) {
+                double d;
+                if (!arg(k, d)) return false;
+                if (std::fabs(d - x) < bd) { bd = std::fabs(d - x); best = d; }
+            }
+            out = Value(best);
+            return true;
+        }
+        if (f == "RAND" || f == "RANDBETWEEN") {
+            if (!need(f == "RAND" ? 0 : 2, f == "RAND" ? 0 : 2)) return false;
+            static std::mt19937 rng(std::random_device{}());
+            if (f == "RAND") { out = Value(std::uniform_real_distribution<double>(0, 1)(rng)); return true; }
+            double lo, hi;
+            if (!arg(0, lo) || !arg(1, hi)) return false;
+            long l = (long)std::ceil(std::min(lo, hi)), h = (long)std::floor(std::max(lo, hi));
+            if (l > h) { err = "RANDBETWEEN: there is no whole number between those."; return false; }
+            out = Value((double)std::uniform_int_distribution<long>(l, h)(rng));
+            return true;
+        }
+        if (f == "ISEVEN" || f == "ISODD") {
+            if (!need(1, 1)) return false;
+            double x;
+            if (!arg(0, x)) return false;
+            long i = (long)std::trunc(x);
+            bool even = i % 2 == 0;
+            out = Value((f == "ISEVEN") == even ? 1.0 : 0.0);
+            return true;
+        }
         static const std::map<QString, double (*)(double)> one = {
+            {"SINH", [](double x) { return std::sinh(x); }},
+            {"COSH", [](double x) { return std::cosh(x); }},
+            {"TANH", [](double x) { return std::tanh(x); }},
+            {"ASINH", [](double x) { return std::asinh(x); }},
+            {"ACOSH", [](double x) { return std::acosh(x); }},
+            {"ATANH", [](double x) { return std::atanh(x); }},
             {"ABS", [](double x) { return std::fabs(x); }},
             {"INT", [](double x) { return std::floor(x); }},
             {"SQRT", [](double x) { return std::sqrt(x); }},

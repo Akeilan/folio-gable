@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -260,7 +261,20 @@ QPushButton* Backstage::bigButton(const QString& icon, const QString& title, con
     b->setCursor(Qt::PointingHandCursor);
     b->setIcon(theme::icon(icon));
     b->setIconSize(QSize(32, 32));
-    b->setText(desc.isEmpty() ? title : title + "\n" + desc);
+    // the description wraps onto more lines rather than being cut off at the button's edge (G7-30)
+    QString wrapped;
+    if (!desc.isEmpty()) {
+        QFontMetrics fm(b->font());
+        const int room = 460 - 32 - 40;   // button width less the icon and padding
+        QString line;
+        for (const QString& word : desc.split(' ', Qt::SkipEmptyParts)) {
+            QString tryLine = line.isEmpty() ? word : line + ' ' + word;
+            if (!line.isEmpty() && fm.horizontalAdvance(tryLine) > room) { wrapped += line + '\n'; line = word; }
+            else line = tryLine;
+        }
+        wrapped += line;
+    }
+    b->setText(desc.isEmpty() ? title : title + "\n" + wrapped);
     b->setFixedWidth(460);
     connect(b, &QPushButton::clicked, this, [this, fn] { run(fn); });
     return b;
@@ -423,7 +437,7 @@ QWidget* Backstage::pageExport() {
     v->addWidget(bigButton("components", "Wavefront OBJ", "With materials (.mtl) and textures.", [this] { host_.exportModel("obj"); }));
     v->addWidget(bigButton("styles", "COLLADA (.dae)", "For renderers and other modelers.", [this] { host_.exportModel("dae"); }));
     v->addWidget(bigButton("dimension", "AutoCAD DXF", "Faces and edges for CAD programs.", [this] { host_.exportModel("dxf"); }));
-    v->addWidget(bigButton("component", "IFC (BIM)", "IFC 2x3 for building programs: each group is a building element, its tag or name its IFC class.", [this] { host_.exportModel("ifc"); }));
+    v->addWidget(bigButton("makecomponent", "IFC (BIM)", "IFC 2x3 for building programs: each group is a building element, its tag or name its IFC class.", [this] { host_.exportModel("ifc"); }));
     v->addWidget(bigButton("shadows", "Google Earth (.kmz)", "The model placed at its location, for Google Earth.", [this] { host_.exportModel("kmz"); }));
     v->addWidget(bigButton("materials", "3D Studio (.3ds)", "For older modelers and renderers, with materials.", [this] { host_.exportModel("3ds"); }));
     v->addSpacing(8);

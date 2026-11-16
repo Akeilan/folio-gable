@@ -4,6 +4,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCompleter>
+#include <QElapsedTimer>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -175,6 +176,10 @@ void TitleBar::focusSearch() {
 void TitleBar::runSearch(const QString& text) {
     QString t = text.trimmed();
     if (t.isEmpty()) return;
+    // Enter on a suggestion reaches both the suggestion list and the box itself: run once (G7-29)
+    static QElapsedTimer last;
+    if (last.isValid() && last.elapsed() < 400) return;
+    last.start();
     QAction* best = nullptr;
     int bestScore = -1;
     for (auto* a : searchActs_) {
@@ -192,6 +197,7 @@ void TitleBar::runSearch(const QString& text) {
     search_->clear();
     search_->clearFocus();
     best->trigger();
+    last.restart();   // a command with a dialog returns when it closes: the second Enter comes right after
 }
 
 bool TitleBar::eventFilter(QObject* o, QEvent* e) {
@@ -264,7 +270,11 @@ bool FramelessResizer::eventFilter(QObject* o, QEvent* e) {
     auto* w = qobject_cast<QWidget*>(o);
     if (!w || w->window() != win_) return false;
     if (QApplication::mouseButtons() & ~Qt::LeftButton) return false;
+    // the event's own position: QCursor::pos() is where the system last saw the pointer, which on
+    // Wayland can be anywhere (a click in the view could start a window resize instead) (G7-33)
     QPoint g = QCursor::pos();
+    if (e->type() == QEvent::MouseMove || e->type() == QEvent::MouseButtonPress) g = static_cast<QMouseEvent*>(e)->globalPosition().toPoint();
+    else if (e->type() == QEvent::HoverMove) g = w->mapToGlobal(static_cast<QHoverEvent*>(e)->position().toPoint());
     Qt::Edges ed = edgesAt(g);
     if (e->type() == QEvent::MouseButtonPress) {
         auto* me = static_cast<QMouseEvent*>(e);

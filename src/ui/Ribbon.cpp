@@ -644,10 +644,15 @@ bool KeyTips::eventFilter(QObject* o, QEvent* e) {
         return false;
     }
     switch (e->type()) {
-    case QEvent::ShortcutOverride:
+    case QEvent::ShortcutOverride: {
+        // An Alt+key shortcut (Alt+Q) is taken here, before its KeyPress: that Alt was not
+        // tapped alone, so releasing it must not show the KeyTips over the search box (G7-28)
+        auto* k = static_cast<QKeyEvent*>(e);
+        if (altDown_ && k->key() != Qt::Key_Alt) altClean_ = false;
         // while KeyTips show, letters go to the KeyTips instead of triggering shortcuts
         if (level_ > 0) { e->accept(); return true; }
         return false;
+    }
     case QEvent::KeyPress: {
         auto* k = static_cast<QKeyEvent*>(e);
         if (k->isAutoRepeat()) return level_ > 0;

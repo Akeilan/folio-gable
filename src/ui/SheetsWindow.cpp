@@ -1,6 +1,9 @@
 // Drawing sheets (G2-03): scenes on paper with dimensions, labels and a title block.
 #include "ui/SheetsWindow.h"
 #include "view/Viewport.h"
+#include "view/Camera.h"
+#include "core/FileFormats.h"
+#include <limits>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -74,7 +77,8 @@ static double sheetScaleOf(const Sheet& s, const Model& m) {
     return 0;
 }
 
-void paintSheet(QPainter& p, const Sheet& s, const Model& m, double k, const std::function<QImage(int, QSize)>& viewImage, const SheetSel* sel) {
+void paintSheet(QPainter& p, const Sheet& s, const Model& m, double k, const std::function<QImage(int, QSize)>& viewImage, const SheetSel* sel,
+                const std::function<void(QPainter&, int, const QRectF&)>& viewVector) {
     QSizeF pg = paperSizeMm(s.paper, s.landscape);
     auto R = [k](const QRectF& r) { return QRectF(r.x() * k, r.y() * k, r.width() * k, r.height() * k); };
     auto P = [k](const QPointF& q) { return QPointF(q.x() * k, q.y() * k); };
@@ -92,9 +96,16 @@ void paintSheet(QPainter& p, const Sheet& s, const Model& m, double k, const std
         const SheetViewport& v = s.viewports[i];
         QRectF r = R(v.rect);
         QSize px(std::max(8, (int)std::lround(r.width())), std::max(8, (int)std::lround(r.height())));
-        QImage img = viewImage ? viewImage(i, px) : QImage();
-        if (!img.isNull()) p.drawImage(r, img);
-        else p.fillRect(r, QColor(235, 235, 240));
+        if (viewVector) {
+            p.save();
+            p.setClipRect(r);
+            viewVector(p, i, r);
+            p.restore();
+        } else {
+            QImage img = viewImage ? viewImage(i, px) : QImage();
+            if (!img.isNull()) p.drawImage(r, img);
+            else p.fillRect(r, QColor(235, 235, 240));
+        }
         if (v.frame) {
             p.setPen(QPen(QColor(90, 90, 90), std::max(1.0, 0.25 * k)));
             p.drawRect(r);
@@ -621,7 +632,103 @@ void SheetsWindow::deleteSelected() {
     select({});
 }
 
-bool SheetsWindow::exportPdf(const QString& path, QString* err) {
+// A hidden-line drawing of the viewport's scene as vector lines: the model's edges, each cut
+// where faces in front hide it. Visibility comes from a depth buffer of the faces drawn on the
+// CPU at about 8 samples per paper millimetre.
+void SheetsWindow::drawViewVector(int si, int vi, QPainter& p, const QRectF& r, double penWidth) {
+    Model& m = doc_->model;
+    if (si < 0 || si >= (int)m.sheets.size() || vi < 0 || vi >= (int)m.sheets[si].viewports.size()) return;
+    const SheetViewport& v = m.sheets[si].viewports[vi];
+    CameraState cam0 = m.camera;
+    std::vector<bool> tags0;
+    for (auto& t : m.tags) tags0.push_back(t.visible);
+    if (v.scene >= 0 && v.scene < (int)m.scenes.size()) {
+        const Scene& sc = m.scenes[v.scene];
+        m.camera = sc.cam;
+        for (size_t k = 0; k < sc.tagVisible.size() && k < m.tags.size(); ++k) m.tags[k].visible = sc.tagVisible[k];
+    }
+    if (v.scale > 0 && !m.camera.perspective) m.camera.orthoHeight = v.rect.height() * v.scale;
+    const int W = std::clamp((int)std::lround(v.rect.width() * 8), 16, 6000), H = std::clamp((int)std::lround(v.rect.height() * 8), 16, 6000);
+    Camera cam;
+    cam.s = &m.camera;
+    cam.w = W;
+    cam.h = H;
+    cam.fitClip(m.worldBBox());
+    std::vector<WorldTri> tris;
+    std::vector<WorldEdge> edges;
+    collectWorld(m, tris, &edges, true);
+    m.camera = cam0;
+    for (size_t k = 0; k < tags0.size() && k < m.tags.size(); ++k) m.tags[k].visible = tags0[k];
+    // depth buffer of 1/z (perspective) or z (parallel): both vary linearly across the screen
+    const bool perspective = (v.scene >= 0 && v.scene < (int)m.scenes.size()) ? m.scenes[v.scene].cam.perspective : cam0.perspective;
+    CameraState used = (v.scene >= 0 && v.scene < (int)m.scenes.size()) ? m.scenes[v.scene].cam : cam0;
+    if (v.scale > 0 && !used.perspective) used.orthoHeight = v.rect.height() * v.scale;
+    cam.s = &used;
+    auto key = [&](double z) { return perspective ? 1.0 / std::max(z, 1e-6) : -z; };   // larger = nearer
+    std::vector<float> depth((size_t)W * H, -std::numeric_limits<float>::infinity());
+    for (auto& t : tris) {
+        double sx[3], sy[3], z[3];
+        bool ok = true;
+        for (int k = 0; k < 3 && ok; ++k) ok = cam.project(t.p[k], sx[k], sy[k], &z[k]);
+        if (!ok) continue;
+        double area = (sx[1] - sx[0]) * (sy[2] - sy[0]) - (sx[2] - sx[0]) * (sy[1] - sy[0]);
+        if (std::fabs(area) < 1e-12) continue;
+        int x0 = std::max(0, (int)std::floor(std::min({sx[0], sx[1], sx[2]}))), x1 = std::min(W - 1, (int)std::ceil(std::max({sx[0], sx[1], sx[2]})));
+        int y0 = std::max(0, (int)std::floor(std::min({sy[0], sy[1], sy[2]}))), y1 = std::min(H - 1, (int)std::ceil(std::max({sy[0], sy[1], sy[2]})));
+        double k0 = key(z[0]), k1 = key(z[1]), k2 = key(z[2]);
+        for (int y = y0; y <= y1; ++y)
+            for (int x = x0; x <= x1; ++x) {
+                double px = x + 0.5, py = y + 0.5;
+                double w0 = ((sx[1] - px) * (sy[2] - py) - (sx[2] - px) * (sy[1] - py)) / area;
+                double w1 = ((sx[2] - px) * (sy[0] - py) - (sx[0] - px) * (sy[2] - py)) / area;
+                double w2 = 1 - w0 - w1;
+                if (w0 < -1e-9 || w1 < -1e-9 || w2 < -1e-9) continue;
+                float d = (float)(w0 * k0 + w1 * k1 + w2 * k2);
+                float& cur = depth[(size_t)y * W + x];
+                if (d > cur) cur = d;
+            }
+    }
+    auto hidden = [&](double x, double y, double kk) {
+        int ix = (int)x, iy = (int)y;
+        if (ix < 0 || iy < 0 || ix >= W || iy >= H) return false;
+        // An edge lies on the border of the faces that meet there, which can be a little nearer at
+        // the sample's centre: allow for how fast the depth changes across neighbouring samples.
+        float here = depth[(size_t)iy * W + ix];
+        if (!std::isfinite(here)) return false;
+        double slope = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx) {
+                int qx = std::clamp(ix + dx, 0, W - 1), qy = std::clamp(iy + dy, 0, H - 1);
+                float d = depth[(size_t)qy * W + qx];
+                if (std::isfinite(d)) slope = std::max(slope, (double)std::fabs(d - here));
+            }
+        double tol = perspective ? std::fabs(kk) * 1e-3 : std::max(1.0, std::fabs(kk) * 1e-4);
+        return here > kk + tol + 1.5 * slope;
+    };
+    p.setPen(QPen(Qt::black, penWidth, Qt::SolidLine, Qt::RoundCap));
+    p.setRenderHint(QPainter::Antialiasing);
+    double fx = r.width() / W, fy = r.height() / H;
+    for (auto& e : edges) {
+        double ax, ay, az, bx, by, bz;
+        if (!cam.project(e.a, ax, ay, &az) || !cam.project(e.b, bx, by, &bz)) continue;
+        double len = std::hypot(bx - ax, by - ay);
+        int steps = std::max(1, (int)std::ceil(len));
+        bool on = false;
+        double sx0 = 0, sy0 = 0, lx = ax, ly = ay;
+        for (int s = 0; s <= steps; ++s) {
+            double t = (double)s / steps;
+            double x = ax + (bx - ax) * t, y = ay + (by - ay) * t;
+            double kk = perspective ? (1 - t) * key(az) + t * key(bz) : key(az + (bz - az) * t);
+            bool vis = !hidden(x, y, kk);
+            if (vis && !on) { sx0 = x; sy0 = y; on = true; }
+            if (!vis && on) { p.drawLine(QPointF(r.x() + sx0 * fx, r.y() + sy0 * fy), QPointF(r.x() + lx * fx, r.y() + ly * fy)); on = false; }
+            lx = x; ly = y;
+        }
+        if (on) p.drawLine(QPointF(r.x() + sx0 * fx, r.y() + sy0 * fy), QPointF(r.x() + bx * fx, r.y() + by * fy));
+    }
+}
+
+bool SheetsWindow::exportPdf(const QString& path, QString* err, bool vector) {
     auto& sheets = doc_->model.sheets;
     sheet();
     QPdfWriter pdf(path);
@@ -642,10 +749,12 @@ bool SheetsWindow::exportPdf(const QString& path, QString* err) {
         double k = pdf.resolution() / 25.4;
         // pictures at 200 dpi: sharp on paper, files of a sensible size
         double kImg = 200 / 25.4;
+        std::function<void(QPainter&, int, const QRectF&)> vec;
+        if (vector) vec = [&](QPainter& pp, int v, const QRectF& r) { drawViewVector(i, v, pp, r, 0.25 * k); };
         paintSheet(p, sheets[i], doc_->model, k, [&](int v, QSize) {
             const QRectF& r = sheets[i].viewports[v].rect;
             return viewImage(i, v, QSize((int)std::lround(r.width() * kImg), (int)std::lround(r.height() * kImg)), false);
-        });
+        }, nullptr, vec);
     }
     p.end();
     QApplication::restoreOverrideCursor();
@@ -718,8 +827,15 @@ void SheetsWindow::buildUi() {
                                                   "PDF (*.pdf)");
         if (fn.isEmpty()) return;
         if (!fn.endsWith(".pdf", Qt::CaseInsensitive)) fn += ".pdf";
+        // views as pictures (as on screen) or as vector lines that stay sharp at any zoom (G7-37)
+        QStringList kinds = {"Pictures — the views as they look on screen", "Vector lines — a hidden-line drawing of the edges"};
+        bool ok = false;
+        QString kind = QInputDialog::getItem(this, "Save as PDF", "Views as:", kinds, st.value("sheetPdfVector", false).toBool() ? 1 : 0, false, &ok);
+        if (!ok) return;
+        bool vec = kind == kinds[1];
+        st.setValue("sheetPdfVector", vec);
         QString err;
-        if (!exportPdf(fn, &err)) QMessageBox::warning(this, "Save as PDF", err);
+        if (!exportPdf(fn, &err, vec)) QMessageBox::warning(this, "Save as PDF", err);
     });
     pdf->setObjectName("sheetPdf");
 

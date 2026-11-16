@@ -29,6 +29,7 @@
 #include <QDir>
 #include <QDragEnterEvent>
 #include <QFileDialog>
+#include <QSaveFile>
 #include <QFileInfo>
 #include <QFontComboBox>
 #include <QFormLayout>
@@ -703,7 +704,7 @@ void MainWindow::closeEvent(QCloseEvent* e) {
     QSettings s;
     s.setValue("geometry", saveGeometry());
     s.setValue("windowState", saveState());
-    QFile::remove(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/autosave.gbl");
+    QFile::remove(autosavePath());
     e->accept();
 }
 
@@ -802,6 +803,7 @@ bool MainWindow::save() {
         return false;
     }
     statusBar()->showMessage("Saved " + doc_->filePath, 3000);
+    QFile::remove(autosavePath());   // saved: the recovery copy is out of date
     addRecent(doc_->filePath);
     saveThumbnail(doc_->filePath);
     updateTitle();
@@ -810,7 +812,14 @@ bool MainWindow::save() {
 
 bool MainWindow::saveAs() {
     QSettings s;
-    QString fn = QFileDialog::getSaveFileName(this, "Save Model", s.value("lastDir", QDir::homePath()).toString() + "/Untitled.gbl", "Folio Gable models (*.gbl)");
+    // a model that has a name is offered under that name, in its own folder (G7-26); a model
+    // imported from another format is offered as a .gbl beside it
+    QString start = s.value("lastDir", QDir::homePath()).toString() + "/Untitled.gbl";
+    if (!doc_->filePath.isEmpty()) {
+        QFileInfo fi(doc_->filePath);
+        start = fi.absolutePath() + "/" + fi.completeBaseName() + ".gbl";
+    }
+    QString fn = QFileDialog::getSaveFileName(this, "Save Model", start, "Folio Gable models (*.gbl)");
     if (fn.isEmpty()) return false;
     if (!fn.endsWith(".gbl", Qt::CaseInsensitive)) fn += ".gbl";
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
@@ -819,6 +828,7 @@ bool MainWindow::saveAs() {
         QMessageBox::warning(this, "Save", err);
         return false;
     }
+    QFile::remove(autosavePath());
     addRecent(fn);
     saveThumbnail(fn);
     updateTitle();
@@ -1039,8 +1049,8 @@ void MainWindow::exportImage() {
     {
         QString sx = QFileInfo(fn).suffix().toLower();
         QString want = imgSel.startsWith("JPEG") ? "jpg" : (imgSel.startsWith("PDF") ? "pdf" : "png");
+        // a type typed with the name (view.pdf) wins over the list; the list only adds one (G7-25)
         if (sx != "png" && sx != "jpg" && sx != "jpeg" && sx != "pdf") fn += "." + want;
-        else if (sx != want && !(want == "jpg" && sx == "jpeg")) fn = fn.left(fn.size() - sx.size()) + want;
     }
     s.setValue("lastDir", QFileInfo(fn).absolutePath());
     QApplication::setOverrideCursor(Qt::WaitCursor);
@@ -1090,12 +1100,17 @@ void MainWindow::print() {
     p.drawImage(target, img);
 }
 
+// Each running Gable keeps its own recovery copy, named after its process, so a second window
+// never mistakes the first one's for a crash, and closing one never deletes another's (G7-23).
+QString MainWindow::autosavePath() const {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QString("/autosave-%1.gbl").arg(QCoreApplication::applicationPid());
+}
+
 void MainWindow::doAutosave() {
     if (!doc_->modified) return;
-    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir().mkpath(dir);
-    QFile f(dir + "/autosave.gbl");
-    if (f.open(QIODevice::WriteOnly)) f.write(saveModel(doc_->model, true));
+    QDir().mkpath(QFileInfo(autosavePath()).absolutePath());
+    QSaveFile f(autosavePath());   // whole or not at all: a crash while writing can't spoil it
+    if (f.open(QIODevice::WriteOnly)) { f.write(saveModel(doc_->model, true)); f.commit(); }
 }
 
 // ======================================================================= clipboard
@@ -1278,6 +1293,20 @@ void MainWindow::solidOp(int op) {
     std::vector<EntRef> sel;
     for (int r : res) sel.push_back({EntKind::Instance, r});
     doc_->setSelection(sel);
+}
+
+void MainWindow::renameInstance(int inst) {
+    Entities& E = doc_->active();
+    if (inst < 0 || inst >= (int)E.insts.size() || !E.insts[inst].alive) return;
+    const Instance& in = E.insts[inst];
+    const ComponentDef& d = doc_->model.defs[in.def];
+    bool ok = false;
+    QString name = QInputDialog::getText(this, d.isGroup ? "Rename Group" : "Rename Component", "Name:", QLineEdit::Normal,
+                                         in.name.isEmpty() ? d.name : in.name, &ok).trimmed();
+    if (!ok || name == in.name) return;
+    doc_->begin("Rename");
+    doc_->active().insts[inst].name = name;
+    doc_->commit();
 }
 
 void MainWindow::flipAlong(int axis) {
@@ -1501,6 +1530,7 @@ void MainWindow::contextMenu(const QPoint& at) {
     if (ni == 1 && sel.size() == 1) {
         int i = sel[0].id;
         m.addAction("Edit Group/Component", [this, i] { doc_->openInstance(i); });
+        m.addAction("Rename…", [this, i] { renameInstance(i); });
     }
     if (ni) {
         m.addAction(act_["explode"]);
@@ -1799,9 +1829,22 @@ void MainWindow::shortcutsHelp() {
 }
 
 void MainWindow::checkRecovery() {
-    QString fn = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/autosave.gbl";
+    // a recovery copy whose Gable is no longer running (or one from before 2.8, "autosave.gbl")
+    QDir dir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+    QString fn;
+    for (const QFileInfo& c : dir.entryInfoList({"autosave.gbl", "autosave-*.gbl"}, QDir::Files, QDir::Time)) {
+        QString pid = c.completeBaseName().section('-', 1);
+        if (pid.toLongLong() == QCoreApplication::applicationPid()) continue;
+        if (!pid.isEmpty()) {   // still running (and still a Gable, not a process that reused its number)
+            QFile comm("/proc/" + pid + "/comm");
+            if (comm.open(QIODevice::ReadOnly) && comm.readAll().contains("gable")) continue;
+        }
+        if (c.size() == 0) { QFile::remove(c.filePath()); continue; }
+        fn = c.filePath();
+        break;
+    }
+    if (fn.isEmpty()) return;
     QFileInfo fi(fn);
-    if (!fi.exists() || fi.size() == 0) return;
     auto r = QMessageBox::question(this, "Recover Model",
                                    QString("Folio Gable did not close normally. Recover the model auto-saved at %1?")
                                        .arg(fi.lastModified().toString("d MMM yyyy hh:mm")));

@@ -35,8 +35,8 @@ bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, Q
 
 // Flattened world geometry for export & rendering helpers.
 // uv: texture coordinates in tiles of the material's texture (v up), from the face's mapping
-struct WorldTri { Vec3 p[3]; Vec3 n; int material; Vec2 uv[3]; };
-struct WorldEdge { Vec3 a, b; };
+struct WorldTri { Vec3 p[3]; Vec3 n; int material; Vec2 uv[3]; int tag = 0; };   // tag: the face's, else its group's
+struct WorldEdge { Vec3 a, b; int tag = 0; };
 void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<WorldEdge>* edges, bool visibleOnly,
                   const std::vector<EntRef>* sel = nullptr);
 

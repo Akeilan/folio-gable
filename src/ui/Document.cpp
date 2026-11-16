@@ -241,6 +241,7 @@ void Document::commit() {
     if (undo_.size() > 200) undo_.erase(undo_.begin());
     redo_.clear();
     opSnapshot_.reset();
+    model.dropUnusedGroups();
     pruneSelection();
     if (qEnvironmentVariableIsSet("GABLE_TESTLOG")) {
         const Entities& E = active();

@@ -25,6 +25,9 @@
 #include <QInputDialog>
 #include <QMenu>
 #include <QScrollBar>
+#include <QShortcut>
+#include <QKeyEvent>
+#include <QAbstractItemDelegate>
 #include <QTimer>
 #include <QMessageBox>
 #include <QPainter>
@@ -2066,14 +2069,80 @@ OutlinerPanel::OutlinerPanel(Document* d, QWidget* parent) : QWidget(parent), do
         doc_->setSelection({{EntKind::Instance, path.back()}});
         updating_ = false;
     });
-    connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* it) {
+    // Rename in place: double-click a name, press F2, or right-click › Rename (G7-35).
+    // Edit Group/Component, which double-click used to do, is on the right-click menu.
+    connect(tree_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* it) { startRename(it); });
+    // F2 is also Top view: while the Outliner has the keyboard it renames instead
+    struct F2Filter : QObject {
+        OutlinerPanel* o;
+        explicit F2Filter(OutlinerPanel* p) : QObject(p), o(p) {}
+        bool eventFilter(QObject*, QEvent* e) override {
+            if ((e->type() == QEvent::ShortcutOverride || e->type() == QEvent::KeyPress) && static_cast<QKeyEvent*>(e)->key() == Qt::Key_F2 &&
+                !static_cast<QKeyEvent*>(e)->modifiers()) {
+                e->accept();
+                if (e->type() == QEvent::KeyPress && o->tree()->currentItem()) o->startRename(o->tree()->currentItem());
+                return true;
+            }
+            return false;
+        }
+    };
+    tree_->installEventFilter(new F2Filter(this));
+    connect(tree_->itemDelegate(), &QAbstractItemDelegate::closeEditor, this, [this] {
+        if (renaming_) { renaming_ = nullptr; QTimer::singleShot(0, this, &OutlinerPanel::refresh); }
+    });
+    connect(tree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* it, int) {
+        if (it != renaming_) return;
+        renaming_ = nullptr;
+        rename(it->data(0, Qt::UserRole).value<QList<int>>(), it->text(0).trimmed());
+    });
+    tree_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree_, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QTreeWidgetItem* it = tree_->itemAt(pos);
+        if (!it) return;
         QList<int> path = it->data(0, Qt::UserRole).value<QList<int>>();
         if (path.isEmpty()) return;
-        InstPath parent(path.begin(), path.end() - 1);
-        doc_->editPath = parent;
-        doc_->openInstance(path.back());
+        QMenu m(this);
+        m.addAction("Rename", this, [this, it] { startRename(it); });
+        m.addAction("Edit Group/Component", this, [this, path] {
+            doc_->editPath = InstPath(path.begin(), path.end() - 1);
+            doc_->openInstance(path.back());
+        });
+        m.exec(tree_->viewport()->mapToGlobal(pos));
     });
     refresh();
+}
+
+Instance* OutlinerPanel::instanceAt(const QList<int>& path) {
+    Entities* E = &doc_->model.root;
+    for (int k = 0; k < path.size(); ++k) {
+        if (path[k] < 0 || path[k] >= (int)E->insts.size() || !E->insts[path[k]].alive) return nullptr;
+        Instance& in = E->insts[path[k]];
+        if (k + 1 == path.size()) return &in;
+        E = &doc_->model.defs[in.def].ents;
+    }
+    return nullptr;
+}
+
+void OutlinerPanel::startRename(QTreeWidgetItem* it) {
+    QList<int> path = it->data(0, Qt::UserRole).value<QList<int>>();
+    Instance* in = instanceAt(path);
+    if (!in) return;
+    updating_ = true;
+    renaming_ = nullptr;
+    // edit the plain name, not the label with its definition and (hidden) marks
+    it->setText(0, in->name.isEmpty() ? doc_->model.defs[in->def].name : in->name);
+    it->setFlags(it->flags() | Qt::ItemIsEditable);
+    updating_ = false;
+    renaming_ = it;
+    tree_->editItem(it, 0);
+}
+
+void OutlinerPanel::rename(const QList<int>& path, const QString& name) {
+    Instance* in = instanceAt(path);
+    if (!in || in->name == name) { QTimer::singleShot(0, this, &OutlinerPanel::refresh); return; }
+    doc_->begin("Rename");
+    if (Instance* again = instanceAt(path)) again->name = name;
+    doc_->commit();
 }
 
 void OutlinerPanel::refresh() {

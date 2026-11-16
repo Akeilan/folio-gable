@@ -1111,6 +1111,18 @@ void FollowMeTool::mousePress(const MouseEv& e) {
     }
     if (r.kind != EntKind::Face) return;
     auto sel = doc()->selectedEdges();
+    if (sel.empty()) {
+        // a face selected as the path (SketchUp's usual way): its outline is the path (G7-10)
+        for (auto& s : doc()->sel)
+            if (s.kind == EntKind::Face && s.id != r.id && s.id >= 0 && s.id < (int)E.faces.size() && E.faces[s.id].alive) {
+                std::vector<int> L = E.faces[s.id].outer;
+                for (size_t i = 0; i < L.size(); ++i) {
+                    int e = E.findEdge(L[i], L[(i + 1) % L.size()]);
+                    if (e >= 0) sel.push_back(e);
+                }
+                break;
+            }
+    }
     {
         // a usable path is one unbranched chain of edges that is not part of the profile
         std::map<int, int> deg;

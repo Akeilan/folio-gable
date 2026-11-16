@@ -26,6 +26,7 @@
 #include <zlib.h>
 
 namespace gable {
+bool sanePoint(const Vec3& p);   // FileFormats.cpp
 
 int importDAEInto(Model& m, Entities& target, const QString& path, const ImportOptions& opt, QString* err);
 
@@ -39,6 +40,8 @@ Vec3 scaled(const Vec3& p, const ImportOptions& o) {
 // A polygon (with holes) as a face; returns the face or -1. Points in model space.
 int addFaceWithHoles(Entities& E, const std::vector<Vec3>& outerPts, const std::vector<std::vector<Vec3>>& holePts,
                      int mat, std::set<std::vector<int>>* seen) {
+    for (auto& p : outerPts) if (!sanePoint(p)) return -1;
+    for (auto& h : holePts) for (auto& p : h) if (!sanePoint(p)) return -1;
     auto loopOf = [&](const std::vector<Vec3>& pts) {
         std::vector<int> loop;
         for (auto& p : pts) {
@@ -235,20 +238,42 @@ bool unzipTo(const QByteArray& z, const QString& dir, QString* err) {
     for (qint64 i = n - 22; i >= std::max<qint64>(0, n - 66000); --i)
         if (qFromLittleEndian<quint32>(b + i) == 0x06054b50) { eocd = i; break; }
     if (eocd < 0) { if (err) *err = "The .kmz file is damaged (no zip directory)."; return false; }
-    int count = qFromLittleEndian<quint16>(b + eocd + 10);
+    qint64 count = qFromLittleEndian<quint16>(b + eocd + 10);
     qint64 cd = qFromLittleEndian<quint32>(b + eocd + 16);
-    for (int k = 0; k < count && cd + 46 <= n; ++k) {
+    // ZIP64 (what the 3MF library behind most 3D-printing programs writes): the real count and
+    // directory offset are in the ZIP64 end record the locator just before this one points at (G7-19)
+    if (eocd >= 20 && qFromLittleEndian<quint32>(b + eocd - 20) == 0x07064b50) {
+        qint64 z64 = (qint64)qFromLittleEndian<quint64>(b + eocd - 20 + 8);
+        if (z64 >= 0 && z64 + 56 <= n && qFromLittleEndian<quint32>(b + z64) == 0x06064b50) {
+            count = (qint64)qFromLittleEndian<quint64>(b + z64 + 32);
+            cd = (qint64)qFromLittleEndian<quint64>(b + z64 + 48);
+        }
+    }
+    if (count > 100000 || cd < 0) { if (err) *err = "The zip directory is damaged."; return false; }
+    for (qint64 k = 0; k < count && cd + 46 <= n; ++k) {
         if (qFromLittleEndian<quint32>(b + cd) != 0x02014b50) break;
         int method = qFromLittleEndian<quint16>(b + cd + 10);
-        quint32 csize = qFromLittleEndian<quint32>(b + cd + 20), usize = qFromLittleEndian<quint32>(b + cd + 24);
+        quint64 csize = qFromLittleEndian<quint32>(b + cd + 20), usize = qFromLittleEndian<quint32>(b + cd + 24);
         int nl = qFromLittleEndian<quint16>(b + cd + 28), xl = qFromLittleEndian<quint16>(b + cd + 30), cl = qFromLittleEndian<quint16>(b + cd + 32);
         qint64 lh = qFromLittleEndian<quint32>(b + cd + 42);
+        if (cd + 46 + nl + xl > n) break;
         QString name = QString::fromUtf8(reinterpret_cast<const char*>(b + cd + 46), nl);
+        // sizes and offset that didn't fit in 32 bits are in the ZIP64 extra field, in this order
+        for (qint64 x = cd + 46 + nl; x + 4 <= cd + 46 + nl + xl;) {
+            int id = qFromLittleEndian<quint16>(b + x), sz = qFromLittleEndian<quint16>(b + x + 2);
+            if (id == 0x0001) {
+                qint64 q = x + 4, end = x + 4 + sz;
+                if (usize == 0xFFFFFFFFu && q + 8 <= end) { usize = qFromLittleEndian<quint64>(b + q); q += 8; }
+                if (csize == 0xFFFFFFFFu && q + 8 <= end) { csize = qFromLittleEndian<quint64>(b + q); q += 8; }
+                if (lh == 0xFFFFFFFFll && q + 8 <= end) { lh = (qint64)qFromLittleEndian<quint64>(b + q); q += 8; }
+            }
+            x += 4 + sz;
+        }
         cd += 46 + nl + xl + cl;
-        if (name.endsWith('/') || name.contains("..") || lh + 30 > n) continue;
+        if (name.endsWith('/') || name.contains("..") || lh < 0 || lh + 30 > n) continue;
         int lnl = qFromLittleEndian<quint16>(b + lh + 26), lxl = qFromLittleEndian<quint16>(b + lh + 28);
         qint64 data = lh + 30 + lnl + lxl;
-        if (data + csize > n || usize > (1u << 30)) continue;
+        if (csize > (quint64)n || data + (qint64)csize > n || usize > (1u << 30)) continue;
         QByteArray out;
         if (method == 0) out = QByteArray(reinterpret_cast<const char*>(b + data), csize);
         else if (method == 8) {
@@ -406,6 +431,7 @@ private:
             char* e = nullptr;
             v.k = SV::Num;
             v.num = strtod(s + i, &e);
+            if (e == s + i) { ++i; v.k = SV::Null; return v; }   // a lone sign: skip it, or the list loop never ends
             i = e - s;
             return v;
         }
@@ -425,10 +451,17 @@ private:
         ++i;
         return v;
     }
+    int depth_ = 0;
     SV list() {
         SV l;
         l.k = SV::List;
         ++i;  // (
+        if (++depth_ > 200) {   // a damaged file: don't recurse without end
+            --depth_;
+            while (i < n && s[i] != ';') ++i;
+            return l;
+        }
+        struct Leave { int& d; ~Leave() { --d; } } leave{depth_};
         skip();
         if (i < n && s[i] == ')') { ++i; return l; }
         while (i < n) {
@@ -1340,7 +1373,10 @@ bool importGLTF(Model& m, Entities& E, const QString& path, const ImportOptions&
             else if (mode == 6) for (size_t i = 1; i + 1 < idx.size(); ++i) tris.push_back({idx[0], idx[i], idx[i + 1]});
             int mat = pr["material"].toInt(-1);
             mat = mat >= 0 && mat < (int)mats.size() ? mats[mat] : -1;
-            auto P = [&](int i) { return C.point(Vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])); };
+            // glTF holds single-precision metres: 0.45 comes back as 449.99998 mm. Rounding to a
+            // ten-thousandth of a millimetre puts corners that should meet back together (G7-22).
+            auto snap = [](double v) { return std::round(v * 1e4) / 1e4; };
+            auto P = [&](int i) { Vec3 q = C.point(Vec3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])); return Vec3(snap(q.x), snap(q.y), snap(q.z)); };
             for (auto& t : tris) {
                 if (t[0] < 0 || t[1] < 0 || t[2] < 0 || t[0] >= (int)nv || t[1] >= (int)nv || t[2] >= (int)nv) continue;
                 if (addFaceWithHoles(ents, {P(t[0]), P(t[1]), P(t[2])}, {}, mat, &seen) >= 0) ++faces;

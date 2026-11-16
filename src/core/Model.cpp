@@ -5,6 +5,7 @@
 #include <cmath>
 #include <set>
 #include <functional>
+#include <map>
 #include <numeric>
 
 namespace gable {
@@ -496,6 +497,27 @@ BBox Model::entitiesBBox(const Entities& e, bool includeHidden) const {
 
 BBox Model::defBBox(int def) const { return entitiesBBox(defs[def].ents); }
 
+void Model::dropUnusedGroups() {
+    // A group is used by one instance only; once nothing places it (it was erased, exploded or
+    // replaced by a solid tool's result) it is gone, as in SketchUp. Components stay until purged.
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        std::vector<int> count(defs.size(), 0);
+        std::vector<char> reached(defs.size(), 0);
+        std::function<void(const Entities&)> walk = [&](const Entities& e) {
+            for (auto& in : e.insts) {
+                if (!in.alive || in.def < 0 || in.def >= (int)defs.size()) continue;
+                ++count[in.def];
+                if (!reached[in.def]) { reached[in.def] = 1; walk(defs[in.def].ents); }
+            }
+        };
+        walk(root);
+        for (size_t d = 0; d < defs.size(); ++d)
+            if (defs[d].alive && defs[d].isGroup && count[d] == 0) { defs[d].alive = false; defs[d].ents.clear(); changed = true; }
+    }
+}
+
 void Model::purgeUnused() {
     // Remove definitions with no instances.
     bool changed = true;
@@ -538,14 +560,18 @@ QString formatLength(double mm, const UnitSettings& u, bool withUnit) {
         long feet = total / (12 * denom);
         long rem = total % (12 * denom);
         long whole = rem / denom, frac = rem % denom;
-        QString s = neg ? "-" : "";
-        if (feet) s += QString("%1' ").arg(feet);
-        s += QString::number(whole);
+        // as SketchUp writes them: 1', 1/2", 5' 1/16", 1' 6 1/4", 0"
+        QStringList parts;
+        if (feet) parts << QString("%1'").arg(feet);
+        QString in;
+        if (whole) in = QString::number(whole);
         if (frac) {
             long g = std::gcd(frac, (long)denom);
-            s += QString(" %1/%2").arg(frac / g).arg(denom / g);
+            in += (in.isEmpty() ? "" : " ") + QString("%1/%2").arg(frac / g).arg(denom / g);
         }
-        s += "\"";
+        if (!in.isEmpty()) parts << in + "\"";
+        else if (!feet) parts << "0\"";
+        QString s = (neg && total ? "-" : "") + parts.join(' ');
         if (std::fabs(inches * denom - std::round(inches * denom)) > 1e-6) s = "~ " + s;
         return s;
     }
@@ -585,42 +611,59 @@ QString formatAngle(double rad, const UnitSettings& u) {
 
 bool parseLength(const QString& in, const UnitSettings& u, double& mm) {
     QString s = in.trimmed();
+    if (s.startsWith('~')) s = s.mid(1).trimmed();   // lengths shown as approximate can be typed back
     s.replace(',', '.');
     if (s.isEmpty()) return false;
-    // feet & inches: 5'6", 5' 6 1/2", 6"
-    static QRegularExpression ftIn(R"(^(-?\d+(?:\.\d+)?)\s*'\s*(?:(\d+(?:\.\d+)?)?\s*(?:(\d+)\s*/\s*(\d+))?\s*"?)?$)");
-    static QRegularExpression inch(R"(^(-?\d+(?:\.\d+)?)?\s*(?:(\d+)\s*/\s*(\d+))?\s*"$)");
-    static QRegularExpression num(R"(^(-?(?:\d+(?:\.\d*)?|\.\d+))\s*([a-zA-Z]*)$)");
+    auto unitWord = [&](QString suf, double& f) {
+        suf = suf.toLower();
+        static const std::map<QString, double> words = {
+            {"mm", 1}, {"millimeter", 1}, {"millimeters", 1}, {"millimetre", 1}, {"millimetres", 1},
+            {"cm", 10}, {"centimeter", 10}, {"centimeters", 10}, {"centimetre", 10}, {"centimetres", 10},
+            {"m", 1000}, {"meter", 1000}, {"meters", 1000}, {"metre", 1000}, {"metres", 1000},
+            {"km", 1e6}, {"in", 25.4}, {"inch", 25.4}, {"inches", 25.4},
+            {"ft", 304.8}, {"foot", 304.8}, {"feet", 304.8}, {"yd", 914.4}, {"yard", 914.4}, {"yards", 914.4}};
+        if (suf.isEmpty()) { f = unitFactor(u.unit); return true; }
+        auto it = words.find(suf);
+        if (it == words.end()) return false;
+        f = it->second;
+        return true;
+    };
+    // feet & inches: 5'6", 5' 6 1/2", 6'-4" (architects' dash), 5'
+    static QRegularExpression ftIn(R"(^(-?\d+(?:\.\d+)?)\s*'\s*-?\s*(?:(\d+(?:\.\d+)?)?\s*(?:(\d+)\s*/\s*(\d+))?\s*"?)?$)");
+    // inches with the mark: 6", 1/2", 3 1/2", -1/2"
+    static QRegularExpression inch(R"(^(-)?\s*(\d+(?:\.\d+)?)?\s*(?:(\d+)\s*/\s*(\d+))?\s*"$)");
+    // a fraction without a mark, in the model's unit or a named one: 3/4, 1 1/2, 1/2 m
+    static QRegularExpression frac(R"(^(-)?\s*(?:(\d+(?:\.\d+)?)\s+)?(\d+)\s*/\s*(\d+)\s*([a-zA-Z]*)$)");
+    static QRegularExpression num(R"(^(-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?)\s*([a-zA-Z]*)$)");
     auto m = ftIn.match(s);
     if (m.hasMatch()) {
         double ft = m.captured(1).toDouble();
         double ins = m.captured(2).isEmpty() ? 0 : m.captured(2).toDouble();
         if (!m.captured(3).isEmpty() && m.captured(4).toDouble() != 0) ins += m.captured(3).toDouble() / m.captured(4).toDouble();
-        mm = (ft * 12 + (ft < 0 ? -ins : ins)) * 25.4;
+        bool neg = m.captured(1).startsWith('-');
+        mm = (ft * 12 + (neg ? -ins : ins)) * 25.4;
         return true;
     }
     m = inch.match(s);
-    if (m.hasMatch() && (!m.captured(1).isEmpty() || !m.captured(2).isEmpty())) {
-        double ins = m.captured(1).isEmpty() ? 0 : m.captured(1).toDouble();
-        if (!m.captured(2).isEmpty() && m.captured(3).toDouble() != 0) ins += m.captured(2).toDouble() / m.captured(3).toDouble();
-        mm = ins * 25.4;
+    if (m.hasMatch() && (!m.captured(2).isEmpty() || !m.captured(3).isEmpty())) {
+        double ins = m.captured(2).isEmpty() ? 0 : m.captured(2).toDouble();
+        if (!m.captured(3).isEmpty() && m.captured(4).toDouble() != 0) ins += m.captured(3).toDouble() / m.captured(4).toDouble();
+        mm = (m.captured(1).isEmpty() ? 1 : -1) * ins * 25.4;
+        return true;
+    }
+    m = frac.match(s);
+    if (m.hasMatch()) {
+        double den = m.captured(4).toDouble(), f;
+        if (den == 0 || !unitWord(m.captured(5), f)) return false;
+        double v = (m.captured(2).isEmpty() ? 0 : m.captured(2).toDouble()) + m.captured(3).toDouble() / den;
+        mm = (m.captured(1).isEmpty() ? 1 : -1) * v * f;
         return true;
     }
     m = num.match(s);
     if (!m.hasMatch()) return false;
-    double v = m.captured(1).toDouble();
-    QString suf = m.captured(2).toLower();
     double f;
-    if (suf.isEmpty()) f = unitFactor(u.unit);
-    else if (suf == "mm") f = 1;
-    else if (suf == "cm") f = 10;
-    else if (suf == "m") f = 1000;
-    else if (suf == "km") f = 1e6;
-    else if (suf == "in") f = 25.4;
-    else if (suf == "ft") f = 304.8;
-    else if (suf == "yd") f = 914.4;
-    else return false;
-    mm = v * f;
+    if (!unitWord(m.captured(2), f)) return false;
+    mm = m.captured(1).toDouble() * f;
     return true;
 }
 

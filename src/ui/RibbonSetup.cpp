@@ -549,6 +549,7 @@ void MainWindow::buildRibbon() {
         g->column({A("copyview")});
         g = t->group("Select");
         g->large(T("select"), "Select", "select");
+        g->large(T("eraser"), "Eraser", "eraser");   // beside Select and the same size (G7-36)
         g->column({A("selectall"), A("selectnone"), A("invertsel")});
         g = t->group("Draw");
         g->large(T("line"), "Line", "line");
@@ -556,7 +557,7 @@ void MainWindow::buildRibbon() {
         g = t->group("Edit");
         g->large(T("pushpull"), "Push/Pull", "pushpull");
         g->column({T("move"), T("rotate"), T("scale")});
-        g->column({T("offset"), T("followme"), T("eraser")});
+        g->column({T("offset"), T("followme")});
         g = t->group("Paint and Measure");
         g->large(T("paint"), "Paint Bucket", "paint");
         g->column({T("tape"), T("dimension"), T("text")});
