@@ -1619,6 +1619,47 @@ private:
         check(data.startsWith("%PDF"), "a PDF");
         int pages = data.count("/Type /Page\n") + data.count("/Type /Page ") + data.count("/Type /Page/") + data.count("/Type/Page\n") + data.count("/Type/Page/") + data.count("/Type/Page ");
         check(pages == 2 || data.count("/MediaBox") >= 2, QString("two pages (%1)").arg(pages));
+        // a vector view draws a curved surface's outline: a cylinder's sides where they turn away
+        {
+            Entities& E = d->model.root;
+            std::vector<Vec3> c;
+            const int n = 24;
+            for (int i = 0; i < n; ++i) c.push_back(Vec3(4000 + 500 * std::cos(2 * kPi * i / n), 500 * std::sin(2 * kPi * i / n), 0));
+            Curve cv; cv.isArc = true; cv.closed = true; cv.radius = 500; cv.segments = n;
+            geom::addPolyline(E, c, true, &cv);
+            for (int f = 0; f < (int)E.faces.size(); ++f)
+                if (E.faces[f].alive && std::fabs(E.faces[f].plane.n.z) > 0.99 && E.pointInFace(f, Vec3(4000, 0, 0))) {
+                    geom::pushPull(E, f, E.faces[f].plane.n.z < 0 ? -1500 : 1500, false);
+                    break;
+                }
+            SheetViewport& vp = d->model.sheets[0].viewports[0];
+            int scene0 = vp.scene;
+            double scale0 = vp.scale;
+            vp.scene = 1;          // the perspective scene
+            vp.scale = 0;
+            d->model.scenes[1].cam.target = Vec3(2500, 500, 600);
+            d->model.scenes[1].cam.eye = Vec3(2500, -9000, 4000);
+            auto ink = [&]() {
+                QImage im((int)vp.rect.width() * 4, (int)vp.rect.height() * 4, QImage::Format_RGB32);
+                im.fill(Qt::white);
+                QPainter p(&im);
+                sw->drawViewVector(0, 0, p, QRectF(0, 0, im.width(), im.height()), 2.0);
+                p.end();
+                return inkCount(im, qRgb(255, 255, 255));
+            };
+            std::vector<int> softs;
+            for (int e = 0; e < (int)E.edges.size(); ++e) if (E.edges[e].alive && E.edges[e].soft) softs.push_back(e);
+            int withOutline = ink();
+            for (int e : softs) E.edges[e].hidden = true;
+            int hardOnly = ink();
+            for (int e : softs) { E.edges[e].hidden = false; E.edges[e].soft = false; }
+            int everyEdge = ink();
+            for (int e : softs) E.edges[e].soft = true;
+            check(softs.size() >= 24 && withOutline > hardOnly + 40 && withOutline < everyEdge,
+                  QString("a vector view draws a cylinder's outline, not its every facet (%1 / %2 / %3)").arg(hardOnly).arg(withOutline).arg(everyEdge));
+            vp.scene = scene0;
+            vp.scale = scale0;
+        }
         // kept in the model file
         QString path = QDir::tempPath() + "/gable-sheets-audit.gbl";
         QString e2;

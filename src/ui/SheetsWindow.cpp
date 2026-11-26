@@ -656,7 +656,7 @@ void SheetsWindow::drawViewVector(int si, int vi, QPainter& p, const QRectF& r, 
     cam.fitClip(m.worldBBox());
     std::vector<WorldTri> tris;
     std::vector<WorldEdge> edges;
-    collectWorld(m, tris, &edges, true);
+    collectWorld(m, tris, &edges, true, nullptr, true);
     m.camera = cam0;
     for (size_t k = 0; k < tags0.size() && k < m.tags.size(); ++k) m.tags[k].visible = tags0[k];
     // depth buffer of 1/z (perspective) or z (parallel): both vary linearly across the screen
@@ -708,7 +708,19 @@ void SheetsWindow::drawViewVector(int si, int vi, QPainter& p, const QRectF& r, 
     p.setPen(QPen(Qt::black, penWidth, Qt::SolidLine, Qt::RoundCap));
     p.setRenderHint(QPainter::Antialiasing);
     double fx = r.width() / W, fy = r.height() / H;
+    // A smoothed edge is drawn where the surface turns away from the eye: one face it joins faces
+    // the eye and the other faces away. That is a curved surface's outline (a cylinder's sides, a
+    // sphere's rim), which a drawing of hard edges alone left out.
+    Vec3 fwd = (used.target - used.eye);
+    auto outline = [&](const WorldEdge& e) {
+        if (e.n.size() < 2) return true;          // a smoothed edge at the surface's border
+        Vec3 d = perspective ? ((e.a + e.b) * 0.5 - used.eye) : fwd;
+        bool front = false, back = false;
+        for (const Vec3& n : e.n) (n.dot(d) < 0 ? front : back) = true;
+        return front && back;
+    };
     for (auto& e : edges) {
+        if (e.soft && !outline(e)) continue;
         double ax, ay, az, bx, by, bz;
         if (!cam.project(e.a, ax, ay, &az) || !cam.project(e.b, bx, by, &bz)) continue;
         double len = std::hypot(bx - ax, by - ay);

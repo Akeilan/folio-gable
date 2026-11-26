@@ -97,7 +97,16 @@ static void dedupeEdgesAt(Entities& E, int v) {
     }
 }
 
+// The edge that now runs where edge e ran: e itself, or, when a split made it a copy of a line
+// already there and it was merged into that line, the line it was merged into. Splitting the
+// dead copy again tied its vertices to an edge that no longer existed.
+static int liveEdge(const Entities& E, int e) {
+    if (e < 0 || E.edges[e].alive) return e;
+    return E.findEdge(E.edges[e].v[0], E.edges[e].v[1]);
+}
+
 int splitEdge(Entities& E, int e, const Vec3& p) {
+    if (e < 0 || e >= (int)E.edges.size() || !E.edges[e].alive) return -1;
     int v0 = E.edges[e].v[0], v1 = E.edges[e].v[1];
     if (E.verts[v0].p.near(p)) return v0;
     if (E.verts[v1].p.near(p)) return v1;
@@ -239,8 +248,9 @@ std::vector<int> insertSegment(Entities& E, const Vec3& a, const Vec3& b, std::v
     }
     std::sort(reqs.begin(), reqs.end(), [](const Req& x, const Req& y) { return x.e != y.e ? x.e < y.e : x.s > y.s; });
     for (auto& r : reqs) {
-        if (!E.edges[r.e].alive) continue;
-        splitEdge(E, r.e, r.p);
+        int cur = liveEdge(E, r.e);
+        if (cur < 0) continue;
+        splitEdge(E, cur, r.p);
     }
     std::sort(ts.begin(), ts.end());
     std::vector<double> ut;
@@ -986,7 +996,34 @@ static void cleanupCollapsed(Entities& E, int drop) {
     }
 }
 
+static int pushPullOnce(Entities& E, int f, double dist, bool keepOriginal, std::vector<int>* createdFaces);
+
+static bool g_ppRefused = false;
+bool lastPushPullRefused() { return g_ppRefused; }
+
+// Push/Pull never leaves a broken model behind: a few rare sequences (a face pushed past the far
+// side of a box that another push had already notched, say) gave faces of no area, faces wound
+// against their own normal, or loops with a gap. When the model was sound before and isn't after,
+// the push/pull is undone and refused instead, and the tool says so.
 int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int>* createdFaces) {
+    g_ppRefused = false;
+    if (f < 0 || f >= (int)E.faces.size() || !E.faces[f].alive || std::fabs(dist) < kTol) return f;
+    const bool sound = validate(E, 1).empty();
+    Entities before;
+    if (sound) before = E;
+    int r = pushPullOnce(E, f, dist, keepOriginal, createdFaces);
+    if (sound && !validate(E, 1).empty()) {
+        E = std::move(before);
+        E.invalidateIndex();
+        E.touch();
+        if (createdFaces) createdFaces->clear();
+        g_ppRefused = true;
+        return f;
+    }
+    return r;
+}
+
+static int pushPullOnce(Entities& E, int f, double dist, bool keepOriginal, std::vector<int>* createdFaces) {
     if (f < 0 || !E.faces[f].alive || std::fabs(dist) < kTol) return f;
     Face F0 = E.faces[f];
     Vec3 n = F0.plane.n;
@@ -1674,9 +1711,12 @@ void intersectEdges(Entities& E, std::vector<int> queue) {
                     if (s > kTol && s < el - kTol) other.push_back({s, X});
                 }
                 std::sort(other.begin(), other.end(), [](auto& x, auto& y) { return x.first > y.first; });
+                int cur = e2;
                 for (auto& o : other) {
+                    cur = liveEdge(E, cur);
+                    if (cur < 0) break;
                     int before = (int)E.edges.size();
-                    splitEdge(E, e2, o.second);
+                    splitEdge(E, cur, o.second);
                     for (int k = before; k < (int)E.edges.size(); ++k) queue.push_back(k);
                 }
             } else {
@@ -1695,11 +1735,14 @@ void intersectEdges(Entities& E, std::vector<int> queue) {
         }
         std::sort(mySplits.begin(), mySplits.end(), [](auto& x, auto& y) { return x.first > y.first; });
         double lastT = -1;
+        int cur = e;
         for (auto& sp : mySplits) {
             if (lastT >= 0 && std::fabs(lastT - sp.first) < kTol) continue;
             lastT = sp.first;
+            cur = liveEdge(E, cur);
+            if (cur < 0) break;
             int before = (int)E.edges.size();
-            splitEdge(E, e, sp.second);
+            splitEdge(E, cur, sp.second);
             for (int k = before; k < (int)E.edges.size(); ++k) queue.push_back(k);
         }
     }

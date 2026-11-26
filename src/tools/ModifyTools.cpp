@@ -113,6 +113,15 @@ void PushPullTool::commit(double dWorld) {
     double dLocal = inv.vector(normalW_ * dWorld).dot(nLocal);
     doc()->begin("Push/Pull");
     int res = geom::pushPull(E, face_, dLocal, copyMode_);
+    if (geom::lastPushPullRefused()) {
+        // it would have left a broken model: nothing changes, and the reason is given
+        doc()->cancel();
+        setStatus("Push/Pull can't make that shape here: it would leave faces that don't join up. "
+                  "Try another distance, or draw a line to split the face first.");
+        face_ = -1;
+        copyMode_ = false;
+        return;
+    }
     doc()->commit();
     lastDist_ = dWorld;
     haveLast_ = true;
@@ -137,6 +146,11 @@ void PushPullTool::vcbEnter(const QString& s) {
             double delta = d - lastDist_;
             doc()->begin("Push/Pull");
             int r = geom::pushPull(E, lastResultFace_, delta, false);
+            if (geom::lastPushPullRefused()) {
+                doc()->cancel();
+                setStatus("Push/Pull can't make that shape here: it would leave faces that don't join up.");
+                return;
+            }
             doc()->commit();
             lastResultFace_ = r;
             lastDist_ = d;

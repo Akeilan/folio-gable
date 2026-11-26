@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <cstdio>
+#include <cstdlib>
 
 using namespace gable;
 static int g_fail = 0, g_pass = 0;
@@ -752,6 +753,56 @@ static void testMatchPhoto() {
 
 #include "import_tests.inc"
 
+// Random push/pull sessions on boxes with lines drawn across them: every step must leave a valid
+// model. A failing session is printed so it can be replayed.
+static void testPushPullFuzz() {
+    unsigned seed = 12345;
+    auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return (seed >> 8) / double(1u << 24); };
+    int bad = 0, runs = 0, refused = 0;
+    const int sessions = std::getenv("GABLE_FUZZ") ? std::atoi(std::getenv("GABLE_FUZZ")) : 300;
+    for (int s = 0; s < sessions && bad < 5; ++s) {
+        Entities E;
+        double w = 500 + std::floor(rnd() * 20) * 100, d = 500 + std::floor(rnd() * 20) * 100, h = 300 + std::floor(rnd() * 20) * 100;
+        box(E, 0, 0, w, d, h);
+        std::string log = "box " + std::to_string((int)w) + "x" + std::to_string((int)d) + "x" + std::to_string((int)h);
+        // a line or two across the top, as a person splits a face before pulling part of it
+        for (int k = (int)(rnd() * 3); k > 0; --k) {
+            if (rnd() < 0.5) {
+                double x = std::floor(rnd() * 9 + 1) * w / 10;
+                geom::addLine(E, Vec3(x, 0, h), Vec3(x, d, h));
+                log += " | x-line " + std::to_string((int)x);
+            } else {
+                double y = std::floor(rnd() * 9 + 1) * d / 10;
+                geom::addLine(E, Vec3(0, y, h), Vec3(w, y, h));
+                log += " | y-line " + std::to_string((int)y);
+            }
+        }
+        for (int step = 0; step < 6; ++step) {
+            std::vector<int> alive;
+            for (int f = 0; f < (int)E.faces.size(); ++f) if (E.faces[f].alive) alive.push_back(f);
+            if (alive.empty()) break;
+            int f = alive[(size_t)(rnd() * alive.size()) % alive.size()];
+            double r = rnd();
+            // pulls out, pushes in part way, all the way through, and back to where faces were
+            double dist = r < 0.4 ? std::floor(rnd() * 10 + 1) * 100 : -std::floor(rnd() * 12 + 1) * 100;
+            bool keep = rnd() < 0.2;
+            geom::pushPull(E, f, dist, keep);
+            ++runs;
+            if (geom::lastPushPullRefused()) ++refused;
+            log += " | pp face " + std::to_string(f) + " by " + std::to_string((int)dist) + (keep ? " ctrl" : "");
+            auto probs = geom::validate(E, 3);
+            if (!probs.empty()) {
+                ++bad;
+                std::printf("  push/pull left an invalid model: %s\n    %s\n", log.c_str(), probs[0].c_str());
+                break;
+            }
+        }
+    }
+    std::printf("  push/pull fuzz: %d steps, %d invalid, %d refused\n", runs, bad, refused);
+    CHECK(bad == 0);
+    CHECK(refused * 100 <= runs);       // refusing is the rare way out, not the usual one
+}
+
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     testLines();
@@ -773,6 +824,7 @@ int main(int argc, char** argv) {
     testSolidRepair();
     testDynamic();
     testImports();
+    testPushPullFuzz();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -36,9 +36,11 @@ bool exportFile(const Model& m, const QString& path, const ExportOptions& opt, Q
 // Flattened world geometry for export & rendering helpers.
 // uv: texture coordinates in tiles of the material's texture (v up), from the face's mapping
 struct WorldTri { Vec3 p[3]; Vec3 n; int material; Vec2 uv[3]; int tag = 0; };   // tag: the face's, else its group's
-struct WorldEdge { Vec3 a, b; int tag = 0; };
+// soft: a smoothed edge, given only when asked for, with the normals of the faces it joins (n, one
+// per face) so a drawing can tell where a curved surface turns away: its outline from there
+struct WorldEdge { Vec3 a, b; int tag = 0; bool soft = false; std::vector<Vec3> n; };
 void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<WorldEdge>* edges, bool visibleOnly,
-                  const std::vector<EntRef>* sel = nullptr);
+                  const std::vector<EntRef>* sel = nullptr, bool withSoft = false);
 
 // Post-processing for meshes built from triangles/polygons.
 void cleanupImportedMesh(Entities& E, const ImportOptions& opt);

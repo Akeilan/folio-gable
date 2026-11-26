@@ -171,7 +171,26 @@ void cleanupImportedMesh(Entities& E, const ImportOptions& opt) {
     // triangles with no area (three corners on one line) cover nothing and only confuse the model
     for (int f = 0; f < (int)E.faces.size(); ++f)
         if (E.faces[f].alive && E.faceArea(f) < kTol * kTol) E.removeFace(f);
-    if (opt.mergeCoplanar) mergeCoplanarRegions(E);
+    // the same triangle more than once (a damaged or carelessly written file, or one listed with
+    // each winding) is one face: kept as copies, every edge of it was shared by three faces or more
+    {
+        std::map<std::vector<int>, int> byLoop;
+        for (int f = 0; f < (int)E.faces.size(); ++f) {
+            if (!E.faces[f].alive) continue;
+            std::vector<int> key = E.faces[f].outer;
+            std::sort(key.begin(), key.end());
+            key.push_back(-1 - (int)E.faces[f].holes.size());
+            if (!byLoop.emplace(key, f).second) E.removeFace(f);
+        }
+    }
+    if (opt.mergeCoplanar) {
+        // Triangles from a damaged file can be nearly but not quite flat with their neighbours,
+        // and merged they made faces with corners off their own plane. Then the triangles stay
+        // as they were read.
+        Entities raw = E;
+        mergeCoplanarRegions(E);
+        if (!geom::validate(E, 1).empty() && geom::validate(raw, 1).empty()) E = std::move(raw);
+    }
     double cosLim = std::cos(opt.smoothAngle * kPi / 180);
     for (auto& e : E.edges) {
         if (!e.alive || e.faces.size() != 2) continue;
@@ -195,7 +214,7 @@ static Vec2 faceUV(const Face& F, const TexMap& t, const Vec3& p, const Material
 }
 
 void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<WorldEdge>* edges, bool visibleOnly,
-                  const std::vector<EntRef>* sel) {
+                  const std::vector<EntRef>* sel, bool withSoft) {
     std::function<void(const Entities&, const Mat4&, int, const std::vector<EntRef>*, int)> walk =
         [&](const Entities& E, const Mat4& xf, int inheritMat, const std::vector<EntRef>* s, int inheritTag) {
             std::set<EntRef> ss;
@@ -236,9 +255,16 @@ void collectWorld(const Model& m, std::vector<WorldTri>& tris, std::vector<World
             if (edges)
                 for (int e = 0; e < (int)E.edges.size(); ++e) {
                     const Edge& Ed = E.edges[e];
-                    if (!Ed.alive || Ed.soft || Ed.hidden || !tagVis(Ed.tag)) continue;
+                    if (!Ed.alive || (Ed.soft && !withSoft) || Ed.hidden || !tagVis(Ed.tag)) continue;
                     if (s && !ss.count({EntKind::Edge, e})) continue;
-                    edges->push_back({xf.point(E.verts[Ed.v[0]].p), xf.point(E.verts[Ed.v[1]].p), Ed.tag > 0 ? Ed.tag : inheritTag});
+                    WorldEdge we{xf.point(E.verts[Ed.v[0]].p), xf.point(E.verts[Ed.v[1]].p), Ed.tag > 0 ? Ed.tag : inheritTag};
+                    if (Ed.soft) {
+                        we.soft = true;
+                        for (int f : Ed.faces)
+                            if (f >= 0 && f < (int)E.faces.size() && E.faces[f].alive && !(visibleOnly && E.faces[f].hidden))
+                                we.n.push_back(xf.normal(E.faces[f].plane.n));
+                    }
+                    edges->push_back(we);
                 }
             for (int i = 0; i < (int)E.insts.size(); ++i) {
                 const Instance& in = E.insts[i];

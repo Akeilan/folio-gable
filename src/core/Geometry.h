@@ -49,6 +49,8 @@ bool mergeCoplanarAcross(Entities& E, const std::vector<int>& edges);
 // Push/Pull face f by dist along its normal. keepOriginal = Ctrl (new starting face).
 // Returns the resulting face that sits at the pushed position (or -1).
 int pushPull(Entities& E, int f, double dist, bool keepOriginal, std::vector<int>* createdFaces = nullptr);
+// True when the last pushPull was refused (and undone) because it would have left a broken model.
+bool lastPushPullRefused();
 
 void reverseFace(Entities& E, int f);
 bool offsetFace(Entities& E, int f, double dist);

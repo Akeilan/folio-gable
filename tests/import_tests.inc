@@ -47,6 +47,61 @@ static void test3DS(const QString& dir) {
     int mf = -1;
     for (auto& f : box.faces) if (f.alive) mf = f.matFront;
     CHECK(mf >= 0 && m.materials[mf].name == "Red brick" && m.materials[mf].color == QColor(200, 30, 20));
+    // every triangle listed three times, once the other way round: still a box of six faces,
+    // no edge shared by more than two
+    {
+        QByteArray fc3; put16(fc3, 36);
+        for (int rep = 0; rep < 3; ++rep)
+            for (auto& f : t) {
+                if (rep == 1) { put16(fc3, f[0]); put16(fc3, f[2]); put16(fc3, f[1]); }
+                else { put16(fc3, f[0]); put16(fc3, f[1]); put16(fc3, f[2]); }
+                put16(fc3, 7);
+            }
+        QByteArray fm3("Red brick"); fm3.append('\0'); put16(fm3, 36); for (int i = 0; i < 36; ++i) put16(fm3, i);
+        fc3 += chunk(0x4130, fm3);
+        QByteArray obj3("Box01"); obj3.append('\0'); obj3 += chunk(0x4100, chunk(0x4110, verts) + chunk(0x4120, fc3));
+        QByteArray file3 = chunk(0x4D4D, chunk(0x0002, QByteArray(4, 3)) + chunk(0x3D3D, chunk(0xAFFF, mat) + chunk(0x4000, obj3)));
+        { QFile f(dir + "/twice.3ds"); f.open(QIODevice::WriteOnly); f.write(file3); }
+        Model m3;
+        int i3 = importFile(m3, m3.root, dir + "/twice.3ds", io, &err);
+        CHECK(i3 >= 0);
+        if (i3 >= 0) {
+            const Entities& b3 = groupOf(m3, groupOf(m3, m3.root, i3), 0);
+            CHECK(faces(b3) == 6);
+            int most = 0;
+            for (auto& e : b3.edges) if (e.alive) most = std::max(most, (int)e.faces.size());
+            CHECK(most == 2);
+            CHECK(geom::isSolid(b3));
+            CHECK(geom::validate(b3, 1).empty());
+        }
+    }
+    // damaged files: bytes changed at random in the vertices and triangles. Whatever comes in is a
+    // valid model, with no edge shared by a crowd of faces.
+    {
+        unsigned seed = 777;
+        auto rnd = [&]() { seed = seed * 1103515245u + 12345u; return seed >> 8; };
+        int start = file.indexOf(verts), bad = 0, tries = std::getenv("GABLE_3DS_FUZZ") ? std::atoi(std::getenv("GABLE_3DS_FUZZ")) : 200;
+        for (int k = 0; k < tries; ++k) {
+            QByteArray d = file;
+            for (int n = 1 + (int)(rnd() % 6); n > 0; --n) {
+                int at = start + (int)(rnd() % (unsigned)(d.size() - start));
+                d[at] = char(rnd() & 0xff);
+            }
+            { QFile f(dir + "/dmg.3ds"); f.open(QIODevice::WriteOnly); f.write(d); }
+            Model md;
+            QString e2;
+            int id = importFile(md, md.root, dir + "/dmg.3ds", io, &e2);
+            takeImportNotes();
+            if (id < 0) continue;
+            std::function<bool(const Entities&)> ok = [&](const Entities& E) {
+                if (!geom::validate(E, 1).empty()) { std::printf("  damaged 3ds %d: %s\n", k, geom::validate(E, 1)[0].c_str()); return false; }
+                for (auto& in : E.insts) if (in.alive && in.def >= 0 && !ok(md.defs[in.def].ents)) return false;
+                return true;
+            };
+            if (!ok(md.root)) ++bad;
+        }
+        CHECK(bad == 0);
+    }
     // damaged and wrong files
     { QFile f(dir + "/bad.3ds"); f.open(QIODevice::WriteOnly); f.write(file.left(40)); }
     Model m2;

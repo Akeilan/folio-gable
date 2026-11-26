@@ -6,17 +6,23 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.8.0_amd64.deb
+sudo apt install ./folio-gable_2.9.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
+
+## What's new in 2.9
+
+- **Vector sheet PDFs** draw a curved surface's outline (a cylinder's sides, a sphere's rim) where it turns away, as well as the hard edges.
+- **Push/Pull never leaves a broken model**: a split line inside a face could leave lines tied to edges that had gone, and a few other rare sequences gave faces of no area or with a gap. Those are fixed or, if one still would, refused with a message and nothing changed. 18,000 random push/pulls on split boxes leave a valid model every time.
+- **Damaged 3D Studio files** come in as a valid model: triangles nearly flat with their neighbours stay as triangles rather than being merged into faces that bend.
 
 ## What's new in 2.8
 
 - **Name groups and components**: double-click or press F2 on a row in the Outliner, or right-click one in the model and choose Rename…; names can be undone.
 - **Eraser button** beside Select on Home, the same size.
 - **DXF import** reads layers (as tags), blocks (as components), polyline arcs, polyface meshes, 3D faces, ellipses, splines, text and the file's units. DXF export writes the layers and units.
-- **Drawing sheet PDFs** can be saved with the views as pictures or as vector lines (the vector version draws hard edges only).
+- **Drawing sheet PDFs** can be saved with the views as pictures or as vector lines.
 - **OBJ export** writes texture coordinates and the texture images.
 - Solid tools give solids where faces meet flush or one object enters another; Follow Me around a circle makes a sphere and around a face's edge uses that edge as the path; push/pull to nothing, back to flush and into a notch leaves valid geometry; offset past a face's middle is refused.
 - Imports are faster and cleaner (a 100,000-triangle STL in under a second), and damaged COLLADA, IFC, STL, 3MF and ZIP64 files no longer crash or hang.
