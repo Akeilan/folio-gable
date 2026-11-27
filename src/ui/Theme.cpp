@@ -1,9 +1,13 @@
 #include "ui/Theme.h"
+#ifdef GABLE_HAVE_DBUS
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusReply>
 #include <QDBusVariant>
+#endif
 #include <QIconEngine>
+#include <QSettings>
+#include <QTimer>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStyle>
@@ -222,6 +226,9 @@ static int gDark = -1;   // -1 not decided yet
 static int portalScheme() {
     // org.freedesktop.portal.Settings.Read("org.freedesktop.appearance", "color-scheme"):
     // 1 prefer dark, 2 prefer light, 0 no preference; -1 when there is no portal
+#ifndef GABLE_HAVE_DBUS
+    return -1;
+#else
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) return -1;
     QDBusInterface iface("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
@@ -235,9 +242,25 @@ static int portalScheme() {
     bool ok = false;
     int n = v.toInt(&ok);
     return ok ? n : -1;
+#endif
+}
+
+// Windows: Settings > Personalisation > Colours > "Choose your app mode". -1 when it doesn't say.
+static int windowsScheme() {
+#ifdef Q_OS_WIN
+    QSettings s("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", QSettings::NativeFormat);
+    QVariant v = s.value("AppsUseLightTheme");
+    if (!v.isValid()) return -1;
+    return v.toInt() == 0 ? 1 : 0;
+#else
+    return -1;
+#endif
 }
 
 static int gnomeScheme() {
+#ifdef Q_OS_WIN
+    return -1;
+#endif
     QProcess p;
     p.start("gsettings", {"get", "org.gnome.desktop.interface", "color-scheme"});
     if (p.waitForFinished(600) && p.exitCode() == 0) {
@@ -258,6 +281,8 @@ bool systemPrefersDark() {
     QString env = qEnvironmentVariable("FOLIO_THEME").trimmed().toLower();
     if (env == "dark" || env == "black") return true;
     if (env == "light" || env == "colorful" || env == "white") return false;
+    int w = windowsScheme();
+    if (w >= 0) return w == 1;
     int p = portalScheme();
     if (p == 1 || p == 2) return p == 1;
     int g = gnomeScheme();
@@ -353,10 +378,22 @@ public:
     explicit Follower(QObject* parent) : QObject(parent) {}
     void start() {
         if (!qEnvironmentVariableIsEmpty("FOLIO_THEME")) return;
+#ifdef GABLE_HAVE_DBUS
         QDBusConnection::sessionBus().connect("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
                                               "org.freedesktop.portal.Settings", "SettingChanged", this,
                                               SLOT(changed(QString, QString, QDBusVariant)));
+#endif
+#ifdef Q_OS_WIN
+        // Windows tells nothing when the app mode changes: look every few seconds
+        auto* t = new QTimer(this);
+        connect(t, &QTimer::timeout, this, [] {
+            int w = windowsScheme();
+            if (w >= 0 && (w == 1) != isDark()) setDark(w == 1);
+        });
+        t->start(4000);
+#endif
     }
+#ifdef GABLE_HAVE_DBUS
 public slots:
     void changed(const QString& ns, const QString& key, const QDBusVariant& v) {
         if (ns != "org.freedesktop.appearance" || key != "color-scheme") return;
@@ -366,6 +403,7 @@ public slots:
         if (n == 1 || n == 2) setDark(n == 1);
         else setDark(systemPrefersDark());
     }
+#endif
 };
 
 void install(QApplication& app) {

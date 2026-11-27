@@ -6,10 +6,14 @@ It models the way SketchUp does — sticky geometry, automatic faces, inference,
 ## Install
 
 ```
-sudo apt install ./folio-gable_2.9.0_amd64.deb
+sudo apt install ./folio-gable_2.10.0_amd64.deb
 ```
 
 Runs on Zorin OS 17 (Ubuntu 22.04) and Zorin OS 18 (Ubuntu 24.04). Launch from the app menu or `folio-gable model.gbl`.
+
+## What's new in 2.10
+
+- Builds and runs on Windows as part of Folio Studio's MSI: light or dark follows Windows' setting, and Send in Email opens the default mail program with the file shown in Explorer.
 
 ## What's new in 2.9
 

@@ -27,6 +27,8 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QDragEnterEvent>
 #include <QFileDialog>
 #include <QSaveFile>
@@ -1828,6 +1830,25 @@ void MainWindow::shortcutsHelp() {
     dlg.exec();
 }
 
+#ifdef Q_OS_WIN
+// declared here rather than through <windows.h>, whose macros clash with this code
+extern "C" {
+__declspec(dllimport) void* __stdcall OpenProcess(unsigned long access, int inherit, unsigned long pid);
+__declspec(dllimport) int __stdcall QueryFullProcessImageNameW(void* process, unsigned long flags, wchar_t* name, unsigned long* size);
+__declspec(dllimport) int __stdcall CloseHandle(void* h);
+}
+// whether process `pid` is running and is a Gable
+static bool windowsProcessIsGable(unsigned long pid) {
+    void* h = OpenProcess(0x1000, 0, pid);          // PROCESS_QUERY_LIMITED_INFORMATION
+    if (!h) return false;
+    wchar_t buf[1024];
+    unsigned long n = 1024;
+    bool gable = QueryFullProcessImageNameW(h, 0, buf, &n) && QString::fromWCharArray(buf, (int)n).contains("gable", Qt::CaseInsensitive);
+    CloseHandle(h);
+    return gable;
+}
+#endif
+
 void MainWindow::checkRecovery() {
     // a recovery copy whose Gable is no longer running (or one from before 2.8, "autosave.gbl")
     QDir dir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
@@ -1836,8 +1857,12 @@ void MainWindow::checkRecovery() {
         QString pid = c.completeBaseName().section('-', 1);
         if (pid.toLongLong() == QCoreApplication::applicationPid()) continue;
         if (!pid.isEmpty()) {   // still running (and still a Gable, not a process that reused its number)
+#ifdef Q_OS_WIN
+            if (windowsProcessIsGable(pid.toULong())) continue;
+#else
             QFile comm("/proc/" + pid + "/comm");
             if (comm.open(QIODevice::ReadOnly) && comm.readAll().contains("gable")) continue;
+#endif
         }
         if (c.size() == 0) { QFile::remove(c.filePath()); continue; }
         fn = c.filePath();
@@ -2206,6 +2231,11 @@ QString MainWindow::sendEmail(const QString& what) {
     }
     QString post = QStandardPaths::findExecutable("folio-post");
     if (!post.isEmpty()) QProcess::startDetached(post, {"--attach", path});
+#ifdef Q_OS_WIN
+    // a new message in the default mail program, with the file shown in Explorer to drag in
+    else if (QDesktopServices::openUrl(QUrl("mailto:?subject=" + QUrl::toPercentEncoding(name))))
+        QProcess::startDetached("explorer", {"/select," + QDir::toNativeSeparators(path)});
+#endif
     else if (!QStandardPaths::findExecutable("xdg-email").isEmpty())
         QProcess::startDetached("xdg-email", {"--subject", name, "--attach", path});
     else {

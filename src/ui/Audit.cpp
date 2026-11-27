@@ -18,7 +18,9 @@
 #include <QPushButton>
 #include <QPainter>
 #include "ui/Theme.h"
+#ifdef GABLE_HAVE_DBUS
 #include <QDBusVariant>
+#endif
 #include "ui/MainWindow.h"
 #include "ui/Panels.h"
 #include "ui/Ribbon.h"
@@ -60,10 +62,30 @@
 #include <functional>
 #include <map>
 
+#ifdef Q_OS_WIN
+// the two calls needed, declared here rather than through <windows.h> (its min, max and near
+// macros clash with this code)
+extern "C" {
+struct GableMemoryCounters {
+    unsigned long cb, PageFaultCount;
+    size_t PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+        QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+};
+__declspec(dllimport) void* __stdcall GetCurrentProcess(void);
+__declspec(dllimport) int __stdcall K32GetProcessMemoryInfo(void* process, GableMemoryCounters* pmc, unsigned long cb);
+}
+#endif
+
 namespace gable {
 
-// resident memory of this process, in kB (Linux)
+// resident memory of this process, in kB (Linux; on Windows the working set, and its peak for VmHWM)
 static long rssKb(const char* key = "VmRSS:") {
+#ifdef Q_OS_WIN
+    GableMemoryCounters pmc{};
+    pmc.cb = sizeof pmc;
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) return -1;
+    return (long)((strcmp(key, "VmHWM:") == 0 ? pmc.PeakWorkingSetSize : pmc.WorkingSetSize) / 1024);
+#endif
     QFile f("/proc/self/status");
     if (!f.open(QIODevice::ReadOnly)) return -1;
     for (const QByteArray& l : f.readAll().split('\n'))
@@ -2121,6 +2143,7 @@ private:
         qunsetenv("FOLIO_THEME");
         QObject* fol = nullptr;
         for (QObject* o : qApp->children()) if (QString(o->metaObject()->className()).endsWith("Follower")) fol = o;
+#ifdef GABLE_HAVE_DBUS
         check(fol != nullptr, "follows the desktop's settings portal");
         if (fol) {
             QMetaObject::invokeMethod(fol, "changed", Q_ARG(QString, "org.freedesktop.appearance"), Q_ARG(QString, "color-scheme"),
@@ -2132,6 +2155,9 @@ private:
             settle(30);
             check(!theme::isDark(), "and back to light");
         }
+#else
+        check(fol != nullptr, "follows the desktop's light or dark setting");
+#endif
         theme::setDark(was);
         settle();
     }
