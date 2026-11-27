@@ -579,9 +579,9 @@ public:
                     for (auto& v : (sg.list.size() == 1 && sg.list[0].k == SV::List ? sg.list[0].list : sg.list)) ix.push_back((int)num(v) - 1);
                     if (arc && ix.size() == 3) {
                         auto a = arcPoints(all[ix[0]], all[ix[1]], all[ix[2]]);
-                        for (auto& p : a) if (pts.empty() || !pts.back().near(p)) pts.push_back(p);
+                        for (auto& p : a) if (pts.empty() || !pts.back().isNear(p)) pts.push_back(p);
                     } else
-                        for (int k : ix) if (k >= 0 && k < (int)all.size() && (pts.empty() || !pts.back().near(all[k]))) pts.push_back(all[k]);
+                        for (int k : ix) if (k >= 0 && k < (int)all.size() && (pts.empty() || !pts.back().isNear(all[k]))) pts.push_back(all[k]);
                 }
             } else pts = all;
         } else if (e->type == "IFCCOMPOSITECURVE") {
@@ -589,7 +589,7 @@ public:
                 const Ent* s = ent(seg);
                 auto sub = curve2d(arg(s, 2), depth + 1);
                 if (s && arg(s, 1).k == SV::Enum && arg(s, 1).str == "F") std::reverse(sub.begin(), sub.end());
-                for (auto& p : sub) if (pts.empty() || !pts.back().near(p)) pts.push_back(p);
+                for (auto& p : sub) if (pts.empty() || !pts.back().isNear(p)) pts.push_back(p);
             }
         } else if (e->type == "IFCTRIMMEDCURVE") {
             const Ent* basis = ent(arg(e, 0));
@@ -700,8 +700,8 @@ public:
             for (auto& p : outer) p = op.point(p);
             for (auto& h : holes) for (auto& p : h) p = op.point(p);
         } else return false;
-        while (outer.size() > 1 && outer.front().near(outer.back())) outer.pop_back();
-        for (auto& h : holes) while (h.size() > 1 && h.front().near(h.back())) h.pop_back();
+        while (outer.size() > 1 && outer.front().isNear(outer.back())) outer.pop_back();
+        for (auto& h : holes) while (h.size() > 1 && h.front().isNear(h.back())) h.pop_back();
         return outer.size() >= 3;
     }
 

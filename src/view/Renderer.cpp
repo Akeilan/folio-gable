@@ -1401,7 +1401,7 @@ void Renderer::drawSection(const std::vector<DrawItem>& items) {
                             hits.push_back(p[k] + (p[l] - p[k]) * t);
                         }
                     }
-                    if (hits.size() == 2 && !hits[0].near(hits[1], 1e-6)) { segs.push_back(hits[0]); segs.push_back(hits[1]); }
+                    if (hits.size() == 2 && !hits[0].isNear(hits[1], 1e-6)) { segs.push_back(hits[0]); segs.push_back(hits[1]); }
                 }
             }
         }

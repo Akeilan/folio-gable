@@ -668,8 +668,8 @@ struct DxfReader {
     void tagEdges(Entities& E, const std::vector<int>& es, int tag) { if (tag) for (int x : es) if (x >= 0 && E.edges[x].alive) E.edges[x].tag = tag; }
     void poly(Entities& E, std::vector<Vec3> pts, bool closed, int tag, const Curve* cv = nullptr) {
         std::vector<Vec3> r;
-        for (auto& q : pts) if (r.empty() || !r.back().near(q)) r.push_back(q);
-        if (closed && r.size() > 2 && r.front().near(r.back())) r.pop_back();
+        for (auto& q : pts) if (r.empty() || !r.back().isNear(q)) r.push_back(q);
+        if (closed && r.size() > 2 && r.front().isNear(r.back())) r.pop_back();
         if (r.size() < 2) return;
         if (r.size() == 2) closed = false;
         auto es = geom::addPolyline(E, r, closed, cv);
@@ -786,7 +786,7 @@ struct DxfReader {
                 Mat4 o = t == "3DFACE" ? Mat4() : ocs(e);
                 for (int k = 0; k < 4; ++k) { Vec3 w = o.point(Vec3(e.num(10 + k), e.num(20 + k), e.num(30 + k, e.num(30)))); pts.push_back(P(w.x, w.y, w.z)); }
                 if (t != "3DFACE") std::swap(pts[2], pts[3]);   // SOLID corners run 1, 2, 4, 3
-                if (pts[3].near(pts[2]) || pts[3].near(pts[0])) pts.pop_back();
+                if (pts[3].isNear(pts[2]) || pts[3].isNear(pts[0])) pts.pop_back();
                 int f = addPolyFace(E, pts, -1, seen);
                 if (f >= 0 && tag) { E.faces[f].tag = tag; for (int x : E.faceEdges(f)) E.edges[x].tag = tag; }
             } else if (t == "ELLIPSE") {

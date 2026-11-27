@@ -44,7 +44,7 @@ struct Vec3 {
     double length2() const { return x * x + y * y + z * z; }
     Vec3 normalized() const { double l = length(); return l > 1e-300 ? *this / l : Vec3(0, 0, 0); }
     bool isZero(double eps = 1e-12) const { return length2() < eps * eps; }
-    bool near(const Vec3& o, double eps = kTol) const { return (*this - o).length2() < eps * eps; }
+    bool isNear(const Vec3& o, double eps = kTol) const { return (*this - o).length2() < eps * eps; }
     // Any unit vector perpendicular to this one.
     Vec3 anyPerp() const {
         Vec3 a = std::fabs(x) < 0.9 ? Vec3(1, 0, 0) : Vec3(0, 1, 0);

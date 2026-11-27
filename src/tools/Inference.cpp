@@ -32,7 +32,7 @@ bool Inference::screenPt(const Vec3& p, double& sx, double& sy) const {
 
 void Inference::track(const Vec3& p) {
     for (auto& t : tracked)
-        if (t.near(p, 1e-6)) return;
+        if (t.isNear(p, 1e-6)) return;
     tracked.push_back(p);
     if (tracked.size() > 4) tracked.erase(tracked.begin());
 }
@@ -156,7 +156,7 @@ InfResult Inference::compute(double x, double y) {
         if (cv >= 0 && cv < (int)E.curves.size() && E.curves[cv].isArc) {
             Vec3 c = dr.edge.xf.point(E.curves[cv].center);
             bool have = false;
-            for (auto& q : centers) if (q.near(c, 1e-6)) have = true;
+            for (auto& q : centers) if (q.isNear(c, 1e-6)) have = true;
             if (!have) { centers.push_back(c); if (centers.size() > 3) centers.erase(centers.begin()); }
         }
     }
@@ -369,7 +369,7 @@ InfResult Inference::compute(double x, double y) {
                 if (!closestLineLine(anchor, d, T, dk, t, s)) continue;
                 Vec3 P1 = anchor + d * t, P2 = T + dk * s;
                 if ((P1 - P2).length() > 1e-6 * std::max(1.0, (P1 - anchor).length())) continue;
-                if (sdist(P1) < pxTol && !T.near(anchor)) {
+                if (sdist(P1) < pxTol && !T.isNear(anchor)) {
                     res.type = InfType::FromPoint;
                     res.p = P1;
                     res.axis = ai; res.dir = d;

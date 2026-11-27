@@ -230,7 +230,7 @@ void LineTool::placeEnd(const Vec3& p) {
     geom::addLine(doc()->active(), toLocal(start_), toLocal(p));
     doc()->commit();
     // Like the reference app: the chain ends when it closes a loop or creates a face.
-    if (p.near(chainStart_, kTol * 10) || liveFaces() > before) {
+    if (p.isNear(chainStart_, kTol * 10) || liveFaces() > before) {
         reset();
         return;
     }

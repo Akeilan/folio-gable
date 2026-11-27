@@ -108,8 +108,8 @@ static int liveEdge(const Entities& E, int e) {
 int splitEdge(Entities& E, int e, const Vec3& p) {
     if (e < 0 || e >= (int)E.edges.size() || !E.edges[e].alive) return -1;
     int v0 = E.edges[e].v[0], v1 = E.edges[e].v[1];
-    if (E.verts[v0].p.near(p)) return v0;
-    if (E.verts[v1].p.near(p)) return v1;
+    if (E.verts[v0].p.isNear(p)) return v0;
+    if (E.verts[v1].p.isNear(p)) return v1;
     int m = E.findVertex(p);
     if (m < 0) m = E.addVertex(p);
     if (m == v0 || m == v1) return m;
@@ -1522,8 +1522,8 @@ bool followMe(Entities& E, int f, std::vector<Vec3> path, bool closedPath) {
     // remove duplicates
     std::vector<Vec3> p;
     for (auto& q : path)
-        if (p.empty() || !p.back().near(q)) p.push_back(q);
-    if (closedPath && p.size() > 2 && p.front().near(p.back())) p.pop_back();
+        if (p.empty() || !p.back().isNear(q)) p.push_back(q);
+    if (closedPath && p.size() > 2 && p.front().isNear(p.back())) p.pop_back();
     if (p.size() < 2) return false;
     size_t n = p.size();
     const Face F0 = E.faces[f];
@@ -1627,8 +1627,8 @@ static std::vector<std::vector<Vec3>> halfProfile(const std::vector<std::vector<
             if ((tp > kTol && tq < -kTol) || (tp < -kTol && tq > kTol)) out.push_back(P + (Q - P) * (tp / (tp - tq)));
         }
         std::vector<Vec3> r;
-        for (auto& q : out) if (r.empty() || !r.back().near(q)) r.push_back(q);
-        while (r.size() > 1 && r.front().near(r.back())) r.pop_back();
+        for (auto& q : out) if (r.empty() || !r.back().isNear(q)) r.push_back(q);
+        while (r.size() > 1 && r.front().isNear(r.back())) r.pop_back();
         return r;
     };
     auto area = [&](const std::vector<Vec3>& L) {

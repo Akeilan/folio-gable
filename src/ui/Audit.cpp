@@ -227,7 +227,7 @@ private:
     int edges() { return E().aliveCount(EntKind::Edge); }
     int insts() { return E().aliveCount(EntKind::Instance); }
     double vol() { return geom::volume(E()); }
-    bool near(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
+    bool close_to(double a, double b, double tol) { return std::fabs(a - b) <= tol; }
     int faceAt(const Vec3& p) {
         for (int f = 0; f < (int)E().faces.size(); ++f) {
             const Face& F = E().faces[f];
@@ -320,14 +320,14 @@ private:
         type("2000,1500");
         check(faces() == 1, QString("rectangle makes one face (got %1)").arg(faces()));
         int f = faceAt(Vec3(1000, 750, 0));
-        check(f >= 0 && near(E().faceArea(f), 3e6, 1), "rectangle area 2000x1500");
+        check(f >= 0 && close_to(E().faceArea(f), 3e6, 1), "rectangle area 2000x1500");
         tool("pushpull");
         move(Vec3(1000, 750, 0));
         click(Vec3(1000, 750, 0));
         move(Vec3(1000, 750, 700));
         type("1000");
         check(faces() == 6, QString("box has 6 faces (got %1)").arg(faces()));
-        check(near(vol(), 3e9, 1e3), QString("box volume (got %1)").arg(vol()));
+        check(close_to(vol(), 3e9, 1e3), QString("box volume (got %1)").arg(vol()));
         check(geom::isSolid(E()), "box is solid");
         validate("box");
     }
@@ -350,7 +350,7 @@ private:
         move(Vec3(1000, 750, 850));
         type("300");
         double expect = 3e9 - 1600.0 * 1100 * 300;
-        check(near(vol(), expect, 1e4), QString("pocket volume %1 (want %2)").arg(vol()).arg(expect));
+        check(close_to(vol(), expect, 1e4), QString("pocket volume %1 (want %2)").arg(vol()).arg(expect));
         // a typed depth goes the way the mouse went, even when the cursor is over the pushed face
         tool("circle");
         move(Vec3(1000, 0, 500));
@@ -394,7 +394,7 @@ private:
         click(Vec3(0, 0, 0));
         check(faces() == 1, QString("typed rectangle of lines closes (faces %1)").arg(faces()));
         int f = faceAt(Vec3(500, 400, 0));
-        check(f >= 0 && near(E().faceArea(f), 8e5, 1), "loop area 1000x800");
+        check(f >= 0 && close_to(E().faceArea(f), 8e5, 1), "loop area 1000x800");
         check(!v->tool()->busy(), "line chain ends after closing a face");
         // a line from an edge's midpoint to the opposite corner
         tool("line");
@@ -425,7 +425,7 @@ private:
         }
         type("300");
         bool up = false;
-        for (auto& vx : E().verts) if (vx.alive && near(vx.p.z, 1300, 0.01)) up = true;
+        for (auto& vx : E().verts) if (vx.alive && close_to(vx.p.z, 1300, 0.01)) up = true;
         check(up, "edge moved 300 up");
         validate("move edge");
     }
@@ -445,7 +445,7 @@ private:
         type("x3");
         check(insts() == 4, QString("copy array x3 (instances %1)").arg(insts()));
         BBox b = d->model.worldBBox();
-        check(near(b.hi.x, 1000 + 3 * 1500, 1), QString("array spacing (max x %1)").arg(b.hi.x));
+        check(close_to(b.hi.x, 1000 + 3 * 1500, 1), QString("array spacing (max x %1)").arg(b.hi.x));
         validate("array");
         // rotate the first copy 90° about its corner
         d->setSelection({{EntKind::Instance, 0}});
@@ -454,10 +454,10 @@ private:
         click(Vec3(500, 0, 0));
         type("90");
         Vec3 xa = E().insts[0].xf.axis(0);
-        check(near(xa.y, 1, 1e-6) || near(xa.y, -1, 1e-6), QString("rotated 90 (x axis %1,%2)").arg(xa.x).arg(xa.y));
+        check(close_to(xa.y, 1, 1e-6) || close_to(xa.y, -1, 1e-6), QString("rotated 90 (x axis %1,%2)").arg(xa.x).arg(xa.y));
         act("undo");
         xa = E().insts[0].xf.axis(0);
-        check(near(xa.x, 1, 1e-6), "undo rotation");
+        check(close_to(xa.x, 1, 1e-6), "undo rotation");
         act("redo");
         validate("rotate");
     }
@@ -476,7 +476,7 @@ private:
         move(Vec3(1500, 1500, 1500));
         type("2");
         BBox b = d->model.worldBBox();
-        check(near(b.hi.x - b.lo.x, 2000, 1), QString("uniform scale x2 (size %1)").arg(b.hi.x - b.lo.x));
+        check(close_to(b.hi.x - b.lo.x, 2000, 1), QString("uniform scale x2 (size %1)").arg(b.hi.x - b.lo.x));
         validate("scale");
     }
 
@@ -537,7 +537,7 @@ private:
         click(Vec3(3000, -1000, 0));
         click(Vec3(4000, -1000, 0));
         click(Vec3(3000, 0, 0));
-        check(near(d->model.axesOrigin.x, 3000, 1), QString("axes moved (origin %1,%2)").arg(d->model.axesOrigin.x).arg(d->model.axesOrigin.y));
+        check(close_to(d->model.axesOrigin.x, 3000, 1), QString("axes moved (origin %1,%2)").arg(d->model.axesOrigin.x).arg(d->model.axesOrigin.y));
         act("undo");
         validate("construction");
     }
@@ -702,7 +702,7 @@ private:
             int def = -1;
             for (auto& in : E().insts) if (in.alive) def = in.def;
             double vv = def >= 0 ? geom::volume(d->model.defs[def].ents) : 0;
-            check(near(vv, 2e9 - 0.25e9, 1e5), QString("union volume %1").arg(vv));
+            check(close_to(vv, 2e9 - 0.25e9, 1e5), QString("union volume %1").arg(vv));
         }
         validate("solids");
         reset();
@@ -796,9 +796,9 @@ private:
         move(Vec3(500, 400, 0));
         type("1000,800");
         int f = faceAt(Vec3(0, 0, 0));
-        check(f >= 0 && near(E().faceArea(f), 8e5, 1), "Ctrl rectangle is centred on the first click");
+        check(f >= 0 && close_to(E().faceArea(f), 8e5, 1), "Ctrl rectangle is centred on the first click");
         BBox b = E().bbox();
-        check(near(b.lo.x, -500, 0.01) && near(b.hi.y, 400, 0.01), QString("centred extents (%1..%2)").arg(b.lo.x).arg(b.hi.x));
+        check(close_to(b.lo.x, -500, 0.01) && close_to(b.hi.y, 400, 0.01), QString("centred extents (%1..%2)").arg(b.lo.x).arg(b.hi.x));
         // two crossing lines: a third line ending at the crossing joins both
         reset();
         geom::addLine(E(), Vec3(0, 0, 0), Vec3(2000, 2000, 0));
@@ -825,7 +825,7 @@ private:
         type("2000");
         check(insts() == 1, "picture placed as a group");
         BBox ib = d->model.worldBBox();
-        check(near(ib.hi.x - ib.lo.x, 2000, 0.5) && near(ib.hi.y - ib.lo.y, 1000, 0.5), "picture keeps its proportions");
+        check(close_to(ib.hi.x - ib.lo.x, 2000, 0.5) && close_to(ib.hi.y - ib.lo.y, 1000, 0.5), "picture keeps its proportions");
         // Entity Info: change an edge's length
         reset();
         tool("line");
@@ -854,7 +854,7 @@ private:
         settle(50);
         int le0 = -1;
         for (int i = 0; i < (int)E().edges.size(); ++i) if (E().edges[i].alive) le0 = i;
-        check(found && E().aliveCount(EntKind::Edge) == 1 && le0 >= 0 && near(E().edgeLength(le0), 1500, 0.01),
+        check(found && E().aliveCount(EntKind::Edge) == 1 && le0 >= 0 && close_to(E().edgeLength(le0), 1500, 0.01),
               QString("edge length typed in Entity Info (found %1, edges %2, length %3)").arg(found).arg(E().aliveCount(EntKind::Edge))
                   .arg(le0 >= 0 ? E().edgeLength(le0) : -1));
         validate("new features");
@@ -1081,13 +1081,13 @@ private:
         if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) baseImg.save(QDir::tempPath() + "/gable-es-base.png");
         check(base > 100, QString("plain edges draw (%1 dark pixels)").arg(base));
         // each setting changes the drawing, more for a larger amount
-        auto measure = [&](QCheckBox* box, QSpinBox* amount, int small, int large, const QString& what) {
-            amount->setValue(small);
+        auto measure = [&](QCheckBox* box, QSpinBox* amount, int lo, int hi, const QString& what) {
+            amount->setValue(lo);
             box->setChecked(true);
             QImage ai = shot();
             int a = ink(ai);
             if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) ai.save(QDir::tempPath() + "/gable-es-" + what + ".png");
-            amount->setValue(large);
+            amount->setValue(hi);
             int b = ink(shot());
             box->setChecked(false);
             int c = ink(shot());
@@ -1348,7 +1348,7 @@ private:
         check(insts() == 1 && dyn::isDynamic(d->model, E().insts[0]), "a bookshelf is placed");
         check(attrValue(E().insts[0], "LenZ") == "1800" && parts(0, "Shelf") == 6, QString("1800 high with 6 shelves (%1)").arg(parts(0, "Shelf")));
         BBox b = d->model.worldBBox();
-        check(near(b.size().x, 800, 1) && near(b.size().z, 1800, 1), "800 wide, 1800 high");
+        check(close_to(b.size().x, 800, 1) && close_to(b.size().z, 1800, 1), "800 wide, 1800 high");
         comps->source_->setCurrentIndex(0);
         settle();
 
@@ -1374,7 +1374,7 @@ private:
         int walnut = d->model.findMaterial("Walnut");
         bool painted = true;
         for (auto& c : d->model.defs[E().insts[0].def].ents.insts) if (c.alive) painted &= c.material == walnut;
-        check(parts(0, "Shelf") == 4 && near(d->model.worldBBox().size().z, 1000, 1), QString("a lower bookshelf has fewer shelves (%1)").arg(parts(0, "Shelf")));
+        check(parts(0, "Shelf") == 4 && close_to(d->model.worldBBox().size().z, 1000, 1), QString("a lower bookshelf has fewer shelves (%1)").arg(parts(0, "Shelf")));
         check(painted, "and every part in the finish chosen");
         check(d->undoName() == "Component Options", "one undo step");
         height = opt->findChild<QLineEdit*>("opt_LenX");
@@ -1398,7 +1398,7 @@ private:
         settle();
         check(attrValue(E().insts[0], "LenZ") == "1500" && parts(0, "Shelf") == 5,
               QString("the Scale tool makes it taller, with more shelves (height %1, %2 shelves)").arg(attrValue(E().insts[0], "LenZ")).arg(parts(0, "Shelf")));
-        check(near(E().insts[0].xf.axis(2).length(), 1, 1e-9), "not by stretching the boards");
+        check(close_to(E().insts[0].xf.axis(2).length(), 1, 1e-9), "not by stretching the boards");
         key(Qt::Key_Escape);
 
         // Component Attributes
@@ -1481,14 +1481,14 @@ private:
             for (auto& c : D.insts) if (c.name == "Leaf") return c;
             return D.insts[0];
         };
-        check(attrValue(leafOf(di0), "RotZ") == "90" && near(leafOf(di0).xf.axis(0).y, 1, 1e-6), "a click swings the door open");
+        check(attrValue(leafOf(di0), "RotZ") == "90" && close_to(leafOf(di0).xf.axis(0).y, 1, 1e-6), "a click swings the door open");
         check(d->undoName() == "Interact", "as one undo step");
         (void)undos;
         click(Vec3(3000 - 40, 500, 1000));
         t.restart();
         while (it->busy() && t.elapsed() < 3000) settle(20);
         Vec3 ax = leafOf(di0).xf.axis(0);
-        check(attrValue(leafOf(di0), "RotZ") == "0" && near(ax.x, 1, 1e-6), "another click closes it");
+        check(attrValue(leafOf(di0), "RotZ") == "0" && close_to(ax.x, 1, 1e-6), "another click closes it");
         if (qEnvironmentVariableIsSet("AUDIT_SHOTS")) { settle(100); v->grabFramebuffer().save(QDir::tempPath() + "/gable-dynamic.png"); }
         key(Qt::Key_Escape);
 
@@ -1807,7 +1807,7 @@ private:
             act("solid_union");
             std::vector<int> live;
             for (int i = 0; i < (int)E().insts.size(); ++i) if (E().insts[i].alive) live.push_back(i);
-            check(live.size() == 1 && instanceIsSolid(d->model, E().insts[live[0]]) && near(instanceVolume(d->model, E().insts[live[0]]), 4.66e8, 1e3),
+            check(live.size() == 1 && instanceIsSolid(d->model, E().insts[live[0]]) && close_to(instanceVolume(d->model, E().insts[live[0]]), 4.66e8, 1e3),
                   "union of a peg into a block is one solid");
             int groups = 0;
             for (auto& df : d->model.defs) groups += df.alive && df.isGroup;
@@ -1822,7 +1822,7 @@ private:
             act("solid_union");
             int live = -1;
             for (int i = 0; i < (int)E().insts.size(); ++i) if (E().insts[i].alive) live = i;
-            check(live >= 0 && instanceIsSolid(d->model, E().insts[live]) && near(instanceVolume(d->model, E().insts[live]), 1.5e9, 1e3),
+            check(live >= 0 && instanceIsSolid(d->model, E().insts[live]) && close_to(instanceVolume(d->model, E().insts[live]), 1.5e9, 1e3),
                   "union of boxes with flush faces is one solid");
         }
         // push/pull: a pocket pulled back flush, a box pushed to nothing, a notch at an edge (G7-02, G7-05)
@@ -1835,7 +1835,7 @@ private:
             int fl = geom::pushPull(E(), f, E().faces[f].plane.n.z > 0 ? -300 : 300, false);
             geom::pushPull(E(), fl, E().faces[fl].plane.n.z > 0 ? 300 : -300, false);
             d->commit();
-            check(geom::validate(E()).empty() && near(vol(), 3e9, 1), "a pocket pulled back flush leaves a valid box");
+            check(geom::validate(E()).empty() && close_to(vol(), 3e9, 1), "a pocket pulled back flush leaves a valid box");
         }
         reset();
         box(2000, 1500, 1000);
@@ -1854,7 +1854,7 @@ private:
             int f = faceAt(Vec3(1750, 250, 1000));
             geom::pushPull(E(), f, E().faces[f].plane.n.z > 0 ? -400 : 400, false);
             d->commit();
-            check(geom::validate(E()).empty() && geom::isSolid(E()) && near(vol(), 3e9 - 1e8, 1), "a rectangle at the edge pushed in makes a notch");
+            check(geom::validate(E()).empty() && geom::isSolid(E()) && close_to(vol(), 3e9 - 1e8, 1), "a rectangle at the edge pushed in makes a notch");
             int before = faces();
             int top = faceAt(Vec3(200, 1000, 1000));
             check(top >= 0 && !geom::offsetFace(E(), top, 5000) && faces() == before, "offset past the middle of a face is refused (G7-06)");
@@ -1870,7 +1870,7 @@ private:
             int pf = faceAt(Vec3(0, 0, 0));
             bool ok = pf >= 0 && geom::followMe(E(), pf, path, true);
             d->commit();
-            check(ok && geom::isSolid(E()) && near(vol(), 5.088e8, 1e6), QString("Follow Me makes a sphere from a circle (%1)").arg(vol()));
+            check(ok && geom::isSolid(E()) && close_to(vol(), 5.088e8, 1e6), QString("Follow Me makes a sphere from a circle (%1)").arg(vol()));
         }
         // files: a COLLADA scene with several objects and a mesh with corners on edges (G7-01, G7-16, G7-20)
         reset();
@@ -1905,13 +1905,13 @@ private:
             if (fr >= 0) geom::pushPull(E(), fr, E().faces[fr].plane.n.z > 0 ? 500 : -500, false);
             d->commit();
             double want = vol();
-            check(geom::isSolid(E()) && near(want, 3.75e9, 1), "a stepped box for the STL round trip");
+            check(geom::isSolid(E()) && close_to(want, 3.75e9, 1), "a stepped box for the STL round trip");
             ExportOptions eo;
             exportFile(d->model, dir + "/step.stl", eo, &err);
             Model back;
             int bi = importFile(back, back.root, dir + "/step.stl", io, &err);
             double got = bi >= 0 ? geom::volume(back.defs[back.root.insts[bi].def].ents) : 0;
-            check(bi >= 0 && geom::isSolid(back.defs[back.root.insts[bi].def].ents) && near(got, want, 1),
+            check(bi >= 0 && geom::isSolid(back.defs[back.root.insts[bi].def].ents) && close_to(got, want, 1),
                   QString("an L-shaped solid comes back from STL whole (%1 of %2)").arg(got).arg(want));
             QDir(dir).removeRecursively();
         }
@@ -1920,7 +1920,7 @@ private:
             UnitSettings in;
             in.unit = LengthUnit::Inch;
             double mm = 0;
-            check(parseLength("1 1/2", in, mm) && near(mm, 38.1, 1e-9), "1 1/2 typed in inches");
+            check(parseLength("1 1/2", in, mm) && close_to(mm, 38.1, 1e-9), "1 1/2 typed in inches");
             dyn::Value out;
             auto none = [](const QString&, dyn::Value&, QString&) { return false; };
             check(dyn::evaluate("LEN(\"door\")&LEFT(\"abc\",2)", none, out) && out.toText() == "4ab", "text functions in component formulas");
@@ -2227,13 +2227,13 @@ private:
         Vec3 r0 = tp->pinWorld(0);
         dragPx(scr(r0), scr(r0 + Vec3(200, 0, 0)));
         Vec2 uv1 = uvAt(probe);
-        check(near(std::hypot(uv1.x - uv0.x, uv1.y - uv0.y), 200, 3), QString("red pin moves the texture (%1,%2 -> %3,%4; pin %5,%6,%7 -> %8,%9,%10)")
+        check(close_to(std::hypot(uv1.x - uv0.x, uv1.y - uv0.y), 200, 3), QString("red pin moves the texture (%1,%2 -> %3,%4; pin %5,%6,%7 -> %8,%9,%10)")
               .arg(uv0.x).arg(uv0.y).arg(uv1.x).arg(uv1.y).arg(r0.x).arg(r0.y).arg(r0.z).arg(tp->pinWorld(0).x).arg(tp->pinWorld(0).y).arg(tp->pinWorld(0).z));
         // green pin: drag it to double the tile width, keeping the direction
         Vec3 g0 = tp->pinWorld(0), g1 = tp->pinWorld(1);
         dragPx(scr(g1), scr(g0 + (g1 - g0) * 2));
         TexMap t2 = geom::effectiveTexMap(E().faces[top], false);
-        check(near(t2.uAxis.length(), 0.5, 0.02) && near(t2.vAxis.length(), 0.5, 0.02), "green pin scales the texture");
+        check(close_to(t2.uAxis.length(), 0.5, 0.02) && close_to(t2.vAxis.length(), 0.5, 0.02), "green pin scales the texture");
         // blue pin: shear
         Vec3 b0 = tp->pinWorld(2);
         dragPx(scr(b0), scr(b0 + Vec3(150, 0, 0)));
@@ -2245,7 +2245,7 @@ private:
         d->undo();
         settle();
         Vec2 uvU = uvAt(probe);
-        check(near(uvU.x, uv0.x, 0.01) && near(uvU.y, uv0.y, 0.01), "undo restores the texture position");
+        check(close_to(uvU.x, uv0.x, 0.01) && close_to(uvU.y, uv0.y, 0.01), "undo restores the texture position");
         d->redo();
         settle();
         // Esc cancels a positioning
@@ -2256,7 +2256,7 @@ private:
         dragPx(scr(rr), scr(rr + Vec3(0, 300, 0)));
         key(Qt::Key_Escape);
         TexMap after = geom::effectiveTexMap(E().faces[top], false);
-        check(near(after.uOff, before.uOff, 1e-6) && near(after.vOff, before.vOff, 1e-6), "Esc cancels");
+        check(close_to(after.uOff, before.uOff, 1e-6) && close_to(after.vOff, before.vOff, 1e-6), "Esc cancels");
         // rotate and flip
         d->setSelection({{EntKind::Face, top}});
         TexMap a0 = geom::effectiveTexMap(E().faces[top], false);
@@ -2266,7 +2266,7 @@ private:
               std::fabs(a0.uAxis.normalized().dot(a1.uAxis.normalized())) < 0.6, "rotate 90 turns the texture");
         act("texrot270");
         TexMap a2 = geom::effectiveTexMap(E().faces[top], false);
-        check(near(a2.uAxis.normalized().dot(a0.uAxis.normalized()), 1, 1e-6), "rotate 270 after 90 is a full turn");
+        check(close_to(a2.uAxis.normalized().dot(a0.uAxis.normalized()), 1, 1e-6), "rotate 270 after 90 is a full turn");
         auto handed = [&](const TexMap& t) { return t.uAxis.cross(t.vAxis).dot(E().faces[top].plane.n); };
         double h0 = handed(geom::effectiveTexMap(E().faces[top], false));
         act("texfliph");
@@ -2301,7 +2301,7 @@ private:
         if (top2 >= 0) {
             TexMap tm = geom::effectiveTexMap(E().faces[top2], false);
             Vec3 q(1000, 400, 1000);
-            check(near(q.dot(tm.uAxis) + tm.uOff, before2.x, 0.5) && near(q.dot(tm.vAxis) + tm.vOff, before2.y, 0.5),
+            check(close_to(q.dot(tm.uAxis) + tm.uOff, before2.x, 0.5) && close_to(q.dot(tm.vAxis) + tm.vOff, before2.y, 0.5),
                   QString("texture moves with the face (%1,%2 vs %3,%4) custom %5 off %6 top %7->%8 sel %9").arg(q.dot(tm.uAxis) + tm.uOff).arg(q.dot(tm.vAxis) + tm.vOff).arg(before2.x).arg(before2.y)
                   .arg(E().faces[top2].texFront.custom).arg(E().faces[top2].texFront.uOff).arg(top).arg(top2).arg(d->sel.size()));
         }
@@ -2322,7 +2322,7 @@ private:
         dragPx(s0, s0 + QPointF(90, 40));
         QPointF s1 = scr(hit);
         check(QLineF(s0, s1).length() < 1.5, QString("orbit keeps the grabbed point under the cursor (moved %1 px)").arg(QLineF(s0, s1).length()));
-        check(near(distTo(hit), d0, d0 * 1e-6), "orbit keeps the distance to the grabbed point");
+        check(close_to(distTo(hit), d0, d0 * 1e-6), "orbit keeps the distance to the grabbed point");
         // empty space: the model's middle must not swing across the screen
         reset();
         box(2000, 1500, 1000);
@@ -2446,7 +2446,7 @@ private:
         click(Vec3(1000, 0, 500));
         move(Vec3(1000, -400, 500));
         type("500");
-        check(near(vol(), 3e9 + 2000.0 * 1000 * 500, 1e4), QString("push/pull inside a group (vol %1)").arg(vol()));
+        check(close_to(vol(), 3e9 + 2000.0 * 1000 * 500, 1e4), QString("push/pull inside a group (vol %1)").arg(vol()));
         act("closegroup");
         validate("group pushpull");
     }
